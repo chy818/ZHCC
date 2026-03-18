@@ -141,6 +141,8 @@ pub struct Lexer {
     prev_token: Option<Token>,
     /// 上一个 token 结束后的位置
     prev_token_end: usize,
+    /// 语义空格警告列表
+    warnings: Vec<String>,
 }
 
 impl Lexer {
@@ -157,6 +159,7 @@ impl Lexer {
             state: LexerState::Normal,
             prev_token: None,
             prev_token_end: 0,
+            warnings: Vec::new(),
         }
     }
 
@@ -261,18 +264,19 @@ impl Lexer {
 
     /**
      * 检查是否需要语义空格
-     * 根据 CCAS 规范: 中文关键字后必须跟随空白字符
+     * 根据 CCAS 规范: 中文关键字后建议添加空格以提升可读性
+     * 注意: 此检查已降级为警告，不会阻止编译
      */
-    fn check_semantic_whitespace(&self, token: &Token) -> Result<(), LexerError> {
+    fn check_semantic_whitespace(&mut self, token: &Token) {
         // 获取前一个 Token
         let prev = match &self.prev_token {
             Some(t) => t,
-            None => return Ok(()),
+            None => return,
         };
 
         // 检查前一个 Token 是否是关键字
         if !is_keyword(&prev.literal) {
-            return Ok(());
+            return;
         }
 
         // 使用 prev_token_end（上一个 token 结束后的字符位置）来检查
@@ -285,19 +289,20 @@ impl Lexer {
             if ch.is_whitespace() {
                 // 找到空白字符（包括空格和制表符）
                 if ch != '\n' {
-                    return Ok(());
+                    return; // 有空格，正常返回
                 }
                 // 换行符允许作为语句分隔，不强制要求空格
-                return Ok(());
+                return;
             }
             break;
         }
 
-        // 没有找到空格，返回错误
-        return Err(LexerError::missing_semantic_whitespace(
-            token.span,
-            &prev.literal
-        ));
+        // 没有找到空格，记录警告而非报错
+        let warning = format!(
+            "建议在关键字 '{}' 后添加空格以提升可读性 (行 {}, 列 {})",
+            prev.literal, token.span.start_line, token.span.start_column
+        );
+        self.add_warning(warning);
     }
 
     /**
@@ -709,9 +714,9 @@ impl Lexer {
             }
         };
 
-        // 语义空格校验: 检查中文关键字后是否有空格
+        // 语义空格校验: 检查中文关键字后是否有空格 (仅警告)
         if is_keyword(&token.literal) {
-            self.check_semantic_whitespace(&token)?;
+            self.check_semantic_whitespace(&token);
         }
 
         // 保存上一个 Token 及其结束位置
@@ -740,6 +745,20 @@ impl Lexer {
         }
 
         Ok(tokens)
+    }
+
+    /**
+     * 获取语义空格警告列表
+     */
+    pub fn get_warnings(&self) -> &Vec<String> {
+        &self.warnings
+    }
+
+    /**
+     * 添加警告信息
+     */
+    fn add_warning(&mut self, warning: String) {
+        self.warnings.push(warning);
     }
 }
 

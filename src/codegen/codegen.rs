@@ -44,6 +44,8 @@ pub struct CodeGenerator {
     ir_output: String,
     indent: usize,
     label_counter: usize,
+    /// 变量名到 SSA 值的映射
+    variables: std::collections::HashMap<String, String>,
 }
 
 impl CodeGenerator {
@@ -52,6 +54,7 @@ impl CodeGenerator {
             ir_output: String::new(),
             indent: 0,
             label_counter: 0,
+            variables: std::collections::HashMap::new(),
         }
     }
 
@@ -164,10 +167,13 @@ impl CodeGenerator {
 
         // 如果有初始化值
         if let Some(init) = &let_stmt.initializer {
-            let value = self.generate_literal_value(init)?;
+            let value = self.generate_expression(init)?;
             self.emit(&format!("store {} %{}, {}* %{}", 
                 var_type, value, var_type, alloca));
         }
+
+        // 保存变量映射
+        self.variables.insert(let_stmt.name.clone(), alloca);
 
         Ok(())
     }
@@ -225,29 +231,48 @@ impl CodeGenerator {
 
     /**
      * 生成循环语句
+     * while 循环结构:
+     *   loop_start:
+     *     条件判断
+     *     br cond, loop_body, loop_end
+     *   loop_body:
+     *     循环体
+     *     br loop_start
+     *   loop_end:
      */
     fn generate_loop_statement(&mut self, loop_stmt: &LoopStmt) -> Result<(), CodegenError> {
-        let loop_label = self.new_label("loop");
-        let end_label = self.new_label("loopend");
+        let loop_start = self.new_label("loop");
+        let loop_body = self.new_label("loopbody");
+        let loop_end = self.new_label("loopend");
 
-        // 循环开始标签
-        self.emit_label(&format!("{}:", loop_label));
+        // 跳到循环条件判断
+        self.emit(&format!("br label %{}", loop_start));
+
+        // 循环条件判断入口
+        self.emit_label(&format!("{}:", loop_start));
 
         // 生成循环条件 (如果有)
         if let Some(cond) = &loop_stmt.condition {
             let cond_result = self.generate_expression(cond)?;
+            // 条件为真跳到循环体，为假跳到循环结束
             self.emit(&format!("br i1 %{}, label %{}, label %{}", 
-                cond_result, loop_label, end_label));
+                cond_result, loop_body, loop_end));
+        } else {
+            // 无限循环，直接跳到循环体
+            self.emit(&format!("br label %{}", loop_body));
         }
 
-        // 循环体
+        // 循环体入口
+        self.emit_label(&format!("{}:", loop_body));
+
+        // 生成循环体
         self.generate_statement(&loop_stmt.body)?;
 
-        // 跳回循环开始
-        self.emit(&format!("br label %{}", loop_label));
+        // 循环体执行完后，跳回条件判断
+        self.emit(&format!("br label %{}", loop_start));
 
         // 循环结束标签
-        self.emit_label(&format!("{}:", end_label));
+        self.emit_label(&format!("{}:", loop_end));
 
         Ok(())
     }
@@ -268,9 +293,23 @@ impl CodeGenerator {
     fn generate_assignment_statement(&mut self, assign_stmt: &AssignmentStmt) -> Result<(), CodegenError> {
         // 生成值表达式
         let value = self.generate_expression(&assign_stmt.value)?;
-
-        // TODO: 存储到变量
-        self.emit(&format!("; 赋值: %{}", value));
+        
+        // 获取目标变量名并更新映射
+        if let Expr::Identifier(ident) = &assign_stmt.target {
+            if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                // 存储到已有变量
+                self.emit(&format!("store i32 %{}, i32* %{}", value, alloca));
+            } else {
+                // 新变量，分配空间
+                let new_alloca = self.new_label("alloca");
+                self.emit(&format!("%{} = alloca i32", new_alloca));
+                self.emit(&format!("store i32 %{}, i32* %{}", value, new_alloca));
+                self.variables.insert(ident.name.clone(), new_alloca);
+            }
+        } else {
+            // 目标不是标识符，生成注释
+            self.emit(&format!("; 赋值目标不是标识符"));
+        }
 
         Ok(())
     }
@@ -281,7 +320,15 @@ impl CodeGenerator {
     fn generate_expression(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
             Expr::Identifier(ident) => {
-                Ok(self.new_label("id"))
+                // 查找变量的 SSA 值
+                if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                    let load = self.new_label("id");
+                    self.emit(&format!("%{} = load i32, i32* %{}", load, alloca));
+                    Ok(load)
+                } else {
+                    // 未找到变量，使用临时标签
+                    Ok(self.new_label("id"))
+                }
             }
             Expr::Literal(lit) => {
                 self.generate_literal_expr(lit)
@@ -383,8 +430,24 @@ impl CodeGenerator {
             BinaryOp::Assign => "add", // 特殊处理
         };
 
+        // 处理赋值运算符
         if binary.op == BinaryOp::Assign {
-            self.emit(&format!("; 赋值 {} = {}", left, right));
+            // 赋值表达式: target = value
+            // 左侧应该是标识符
+            if let Expr::Identifier(ident) = &*binary.left {
+                if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                    // 存储到已有变量
+                    self.emit(&format!("store i32 %{}, i32* %{}", right, alloca));
+                } else {
+                    // 新变量，分配空间
+                    let new_alloca = self.new_label("alloca");
+                    self.emit(&format!("%{} = alloca i32", new_alloca));
+                    self.emit(&format!("store i32 %{}, i32* %{}", right, new_alloca));
+                    self.variables.insert(ident.name.clone(), new_alloca);
+                }
+            }
+            // 返回右值作为结果
+            return Ok(right);
         } else {
             self.emit(&format!("%{} = {} i32 %{}, %{}", result, llvm_op, left, right));
         }
@@ -429,17 +492,37 @@ impl CodeGenerator {
 
         // 生成参数
         let mut args = Vec::new();
+        
+        // 检查是否是内置函数
+        let is_builtin_print = func_name == "打印" || func_name == "print";
+        
         for arg in &call.arguments {
             let arg_val = self.generate_expression(arg)?;
-            args.push(format!("i32 %{}", arg_val));
+            if is_builtin_print {
+                // 打印函数接受 i8* 字符串指针
+                args.push(format!("i8* %{}", arg_val));
+            } else {
+                args.push(format!("i32 %{}", arg_val));
+            }
         }
 
         let result = self.new_label("call");
         
+        // 生成函数调用
         if args.is_empty() {
-            self.emit(&format!("%{} = call i32 @{}()", result, func_name));
+            if is_builtin_print {
+                self.emit(&format!("%{} = call i32 @{}()", result, func_name));
+            } else {
+                self.emit(&format!("%{} = call i32 @{}()", result, func_name));
+            }
         } else {
-            self.emit(&format!("%{} = call i32 @{}()", result, func_name)); // 简化
+            let args_str = args.join(", ");
+            if is_builtin_print {
+                // 打印函数返回 i32
+                self.emit(&format!("%{} = call i32 @{}({})", result, func_name, args_str));
+            } else {
+                self.emit(&format!("%{} = call i32 @{}({})", result, func_name, args_str));
+            }
         }
 
         Ok(result)
