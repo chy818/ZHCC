@@ -1,0 +1,1110 @@
+/**
+ * @file parser.rs
+ * @brief CCAS 语法分析器 (Parser)
+ * @description 将 Token 流转换为抽象语法树 (AST)
+ * 
+ * 支持的语法:
+ * - 变量声明: 定义 x: 整数 = 10
+ * - 函数定义: 函数 主 函数() { ... }
+ * - 表达式: 算术、比较、逻辑运算
+ * - 控制流: 若/当/循环/匹配
+ */
+
+use crate::lexer::{Token, TokenType, Keyword, Span};
+use crate::ast::*;
+use crate::error::{ParserError, CompilerError};
+
+/**
+ * 语法分析器
+ * 使用递归下降解析算法
+ */
+pub struct Parser {
+    tokens: Vec<Token>,
+    position: usize,
+}
+
+impl Parser {
+    /**
+     * 从 Token 列表创建解析器
+     */
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            position: 0,
+        }
+    }
+
+    /**
+     * 获取当前位置的 Token
+     */
+    fn current(&self) -> Option<&Token> {
+        self.tokens.get(self.position)
+    }
+
+    /**
+     * 向前看 n 个 Token
+     */
+    fn peek(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.position + offset)
+    }
+
+    /**
+     * 检查当前 Token 是否为指定类型
+     */
+    fn check(&self, token_type: &TokenType) -> bool {
+        self.current()
+            .map(|t| &t.token_type == token_type)
+            .unwrap_or(false)
+    }
+
+    /**
+     * 检查当前 Token 是否为指定关键字
+     */
+    fn check_keyword(&self, keyword: &Keyword) -> bool {
+        if let Some(Token { token_type: TokenType::Keyword(k), .. }) = self.current() {
+            k == keyword
+        } else {
+            false
+        }
+    }
+
+    /**
+     * 消耗当前 Token，如果匹配则推进位置
+     */
+    fn match_token(&mut self, token_type: &TokenType) -> bool {
+        if self.check(token_type) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * 消耗当前 Token，必须匹配否则报错
+     */
+    fn expect(&mut self, token_type: &TokenType) -> Result<Token, ParserError> {
+        let current_token = self.current().cloned();
+        
+        if let Some(token) = current_token {
+            if &token.token_type == token_type {
+                self.position += 1;
+                return Ok(token);
+            }
+        }
+        
+        let expected = format!("{:?}", token_type);
+        let found = self.current()
+            .map(|t| format!("{:?}", t.token_type))
+            .unwrap_or_else(|| "文件结束".to_string());
+        
+        let span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+        
+        Err(ParserError::unexpected_token(&expected, &found, span))
+    }
+
+    /**
+     * 消耗当前 Token，如果匹配指定关键字则推进位置
+     */
+    fn match_keyword(&mut self, keyword: &Keyword) -> bool {
+        if self.check_keyword(keyword) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * 解析整个模块
+     * 模块 -> 函数列表
+     */
+    pub fn parse_module(&mut self) -> Result<Module, ParserError> {
+        let mut functions = Vec::new();
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        while !self.check(&TokenType::文件结束) {
+            match self.parse_function() {
+                Ok(func) => functions.push(func),
+                Err(e) => return Err(e),
+            }
+        }
+
+        let end_span = self.tokens.last()
+            .map(|t| t.span)
+            .unwrap_or(start_span);
+
+        Ok(Module::new(functions, start_span.merge(end_span)))
+    }
+
+    /**
+     * 解析函数定义
+     * 函数 -> '函数' 标识符 '函数' 参数列表 返回类型? '{' 语句列表 '}'
+     */
+    fn parse_function(&mut self) -> Result<Function, ParserError> {
+        // 消耗 '函数' 关键字
+        self.expect(&TokenType::Keyword(Keyword::函数))?;
+
+        // 函数名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "函数名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.position += 1;
+
+        // 消耗 '函数' 关键字 (函数名后的 '函数')
+        self.expect(&TokenType::Keyword(Keyword::函数))?;
+
+        // 参数列表
+        let params = self.parse_parameter_list()?;
+
+        // 可选返回类型
+        let return_type = self.parse_return_type()?;
+
+        // 函数体
+        let body_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+        
+        self.expect(&TokenType::左花括号)?;
+        let statements = self.parse_statement_list()?;
+        self.expect(&TokenType::右花括号)?;
+
+        let span = body_span; // TODO: 合并完整 span
+
+        Ok(Function::new(name, params, return_type, BlockStmt::new(statements, span), span))
+    }
+
+    /**
+     * 解析参数列表
+     * 参数列表 -> '(' (参数 (',' 参数)*)? ')'
+     */
+    fn parse_parameter_list(&mut self) -> Result<Vec<FunctionParam>, ParserError> {
+        self.expect(&TokenType::左圆括号)?;
+        
+        let mut params = Vec::new();
+        
+        // 如果下一个是 ')'，参数列表为空
+        if self.check(&TokenType::右圆括号) {
+            self.position += 1;
+            return Ok(params);
+        }
+
+        // 解析第一个参数
+        params.push(self.parse_parameter()?);
+
+        // 解析剩余参数
+        while self.match_token(&TokenType::逗号) {
+            params.push(self.parse_parameter()?);
+        }
+
+        self.expect(&TokenType::右圆括号)?;
+
+        Ok(params)
+    }
+
+    /**
+     * 解析单个参数
+     * 参数 -> 标识符 ':' 类型
+     */
+    fn parse_parameter(&mut self) -> Result<FunctionParam, ParserError> {
+        // 参数名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "参数名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.position += 1;
+
+        // 冒号
+        self.expect(&TokenType::冒号)?;
+
+        // 参数类型
+        let param_type = self.parse_type()?;
+
+        Ok(FunctionParam { name, param_type })
+    }
+
+    /**
+     * 解析返回类型
+     * 返回类型 -> ':' 类型
+     */
+    fn parse_return_type(&mut self) -> Result<Type, ParserError> {
+        if self.match_token(&TokenType::冒号) {
+            self.parse_type()
+        } else {
+            Ok(Type::Void) // 默认无返回
+        }
+    }
+
+    /**
+     * 解析类型
+     * 类型 -> 基础类型 ('<' 类型 ')' )?
+     */
+    fn parse_type(&mut self) -> Result<Type, ParserError> {
+        let base_type = match self.current() {
+            Some(Token { token_type: TokenType::Keyword(Keyword::整数), .. }) => {
+                self.position += 1;
+                Type::Int
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::长整数), .. }) => {
+                self.position += 1;
+                Type::Long
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::浮点数), .. }) => {
+                self.position += 1;
+                Type::Float
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::双精度), .. }) => {
+                self.position += 1;
+                Type::Double
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::布尔), .. }) => {
+                self.position += 1;
+                Type::Bool
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::文本), .. }) => {
+                self.position += 1;
+                Type::String
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::字符), .. }) => {
+                self.position += 1;
+                Type::Char
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::无返回), .. }) => {
+                self.position += 1;
+                Type::Void
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::或许), .. }) => {
+                self.position += 1;
+                // 解析泛型参数
+                self.expect(&TokenType::左尖括号)?;
+                let inner_type = Box::new(self.parse_type()?);
+                self.expect(&TokenType::右尖括号)?;
+                return Ok(Type::Optional(inner_type));
+            }
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                let name = literal.clone();
+                self.position += 1;
+                Type::Custom(name)
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "类型",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+
+        // 检查数组类型
+        if self.check(&TokenType::左方括号) {
+            self.position += 1;
+            self.expect(&TokenType::右方括号)?;
+            return Ok(Type::Array(Box::new(base_type)));
+        }
+
+        Ok(base_type)
+    }
+
+    /**
+     * 解析语句列表
+     * 语句列表 -> 语句*
+     */
+    fn parse_statement_list(&mut self) -> Result<Vec<Stmt>, ParserError> {
+        let mut statements = Vec::new();
+
+        while !self.check(&TokenType::右花括号) && !self.check(&TokenType::文件结束) {
+            statements.push(self.parse_statement()?);
+        }
+
+        Ok(statements)
+    }
+
+    /**
+     * 解析语句
+     */
+    fn parse_statement(&mut self) -> Result<Stmt, ParserError> {
+        let token = self.current()
+            .ok_or_else(|| ParserError::unexpected_token_at(1, 1, "期望语句"))?;
+
+        match &token.token_type {
+            // 变量声明: 定义 x: 整数 = 10
+            TokenType::Keyword(Keyword::定义) => self.parse_let_statement(),
+            
+            // 返回语句: 返回 expr
+            TokenType::Keyword(Keyword::返回) => self.parse_return_statement(),
+            
+            // 条件语句: 若 expr 则 { ... } 否则 { ... }
+            TokenType::Keyword(Keyword::若) => self.parse_if_statement(),
+            
+            // 循环语句: 当 expr 则 { ... }
+            TokenType::Keyword(Keyword::当) => self.parse_while_statement(),
+            
+            // 循环语句: 循环 { ... }
+            TokenType::Keyword(Keyword::循环) => self.parse_loop_statement(),
+            
+            // 跳出循环: 退出
+            TokenType::Keyword(Keyword::退出) => self.parse_break_statement(),
+            
+            // 跳过循环: 跳过
+            TokenType::Keyword(Keyword::跳过) => self.parse_continue_statement(),
+            
+            // 块语句: { ... }
+            TokenType::左花括号 => self.parse_block_statement(),
+            
+            // 表达式语句
+            _ => {
+                let expr = self.parse_expression()?;
+                self.match_token(&TokenType::分号); // 可选分号
+                let span = expr.span();
+                Ok(Stmt::Expr(ExprStmt::new(expr, span)))
+            }
+        }
+    }
+
+    /**
+     * 解析变量声明语句
+     * 定义 x: 整数 = 10
+     */
+    fn parse_let_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        // 消耗 '定义' 关键字
+        self.position += 1;
+
+        // 可变修饰符
+        let is_mutable = self.match_keyword(&Keyword::可变);
+
+        // 变量名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "变量名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.position += 1;
+
+        // 可选类型标注
+        let type_annotation = if self.match_token(&TokenType::冒号) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // 可选初始化值
+        let initializer = if self.match_token(&TokenType::赋值) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        self.match_token(&TokenType::分号); // 可选分号
+
+        let span = start_span; // TODO: 合并完整 span
+        
+        // 创建 LetStmt (注意: 当前 AST 没有 is_mutable 字段)
+        Ok(Stmt::Let(LetStmt::new(name, type_annotation, initializer, span)))
+    }
+
+    /**
+     * 解析返回语句
+     */
+    fn parse_return_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1; // 消耗 '返回'
+
+        let value = if self.check(&TokenType::分号) || self.check(&TokenType::右花括号) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+
+        self.match_token(&TokenType::分号);
+
+        Ok(Stmt::Return(ReturnStmt::new(value, start_span)))
+    }
+
+    /**
+     * 解析条件语句
+     * 若 条件 则 { ... } 否则 { ... }
+     */
+    fn parse_if_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1; // 消耗 '若'
+
+        let condition = self.parse_expression()?;
+
+        // 期望 '则'
+        self.expect(&TokenType::Keyword(Keyword::则))?;
+
+        let then_branch = Box::new(self.parse_statement()?);
+
+        // 检查 '否则' 或 '否则若'
+        let else_branch = if self.match_keyword(&Keyword::否则) {
+            if self.check_keyword(&Keyword::若) {
+                // 否则若 - 递归解析
+                Some(Box::new(self.parse_if_statement()?))
+            } else {
+                Some(Box::new(self.parse_statement()?))
+            }
+        } else {
+            None
+        };
+
+        Ok(Stmt::If(IfStmt::new(
+            vec![Branch { condition, body: then_branch }],
+            else_branch,
+            start_span
+        )))
+    }
+
+    /**
+     * 解析 while 循环
+     * 当 条件 则 { ... }
+     */
+    fn parse_while_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1; // 消耗 '当'
+
+        let condition = self.parse_expression()?;
+
+        // 期望 '则'
+        self.expect(&TokenType::Keyword(Keyword::则))?;
+
+        let body = Box::new(self.parse_statement()?);
+
+        Ok(Stmt::Loop(LoopStmt::new(
+            LoopKind::While,
+            Some(condition),
+            None,
+            None,
+            body,
+            start_span
+        )))
+    }
+
+    /**
+     * 解析循环语句
+     * 循环 { ... }
+     * 循环 从 i 到 10 { ... }
+     * 循环 从 i 取自 集合 { ... }
+     */
+    fn parse_loop_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1; // 消耗 '循环'
+
+        // 检查循环类型
+        if self.match_keyword(&Keyword::从) {
+            // 计数循环或遍历循环
+            return self.parse_counted_or_for_loop(start_span);
+        }
+
+        // 无限循环: 循环 { ... }
+        let body = Box::new(self.parse_statement()?);
+
+        Ok(Stmt::Loop(LoopStmt::new(
+            LoopKind::Infinite,
+            None,
+            None,
+            None,
+            body,
+            start_span
+        )))
+    }
+
+    /**
+     * 解析计数循环或遍历循环
+     * 循环 从 i 到 10 { ... }
+     * 循环 从 item 取自 集合 { ... }
+     * 循环 从 i 到 5 则 { ... }
+     */
+    fn parse_counted_or_for_loop(&mut self, start_span: Span) -> Result<Stmt, ParserError> {
+        // 解析循环变量 (标识符)
+        let var_name = match self.current() {
+            Some(token) if token.token_type == TokenType::标识符 => {
+                let name = token.literal.clone();
+                self.position += 1;
+                name
+            }
+            _ => {
+                return Err(ParserError::unexpected_token_at(
+                    self.current().map(|t| t.span.start_line).unwrap_or(1),
+                    self.current().map(|t| t.span.start_column).unwrap_or(1),
+                    "期望循环变量"
+                ));
+            }
+        };
+
+        // 检查是否有 '到' (计数循环) 或 '取自' (遍历)
+        if self.match_keyword(&Keyword::到) {
+            // 计数循环: 循环 从 i 到 10 { ... }
+            let end = self.parse_expression()?;
+            
+            // 创建计数器初始化 (变量名, 起始值0, 结束值, 无步长)
+            let counter = CounterInit {
+                variable: var_name,
+                start: Expr::Literal(LiteralExpr::new(LiteralKind::Integer(0), Span::dummy())),
+                end,
+                step: None,
+            };
+            
+            // 可选的 '则' 关键字
+            self.match_keyword(&Keyword::则);
+            
+            let body = Box::new(self.parse_statement()?);
+
+            return Ok(Stmt::Loop(LoopStmt::new(
+                LoopKind::Counted,
+                None,
+                Some(counter),
+                None,
+                body,
+                start_span
+            )));
+        } else if self.match_keyword(&Keyword::取自) {
+            // 遍历循环: 循环 从 item 取自 集合 { ... }
+            let iterator = self.parse_expression()?;
+            
+            // 可选的 '则' 关键字
+            self.match_keyword(&Keyword::则);
+            
+            let body = Box::new(self.parse_statement()?);
+
+            return Ok(Stmt::Loop(LoopStmt::new(
+                LoopKind::For,
+                None,
+                None,
+                Some(iterator),
+                body,
+                start_span
+            )));
+        }
+
+        Err(ParserError::unexpected_token_at(
+            self.current().map(|t| t.span.start_line).unwrap_or(1),
+            self.current().map(|t| t.span.start_column).unwrap_or(1),
+            "期望 '到' 或 '取自'"
+        ))
+    }
+
+    /**
+     * 解析 break 语句
+     */
+    fn parse_break_statement(&mut self) -> Result<Stmt, ParserError> {
+        let span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1;
+        self.match_token(&TokenType::分号);
+
+        Ok(Stmt::Break(BreakStmt::new(None, span)))
+    }
+
+    /**
+     * 解析 continue 语句
+     */
+    fn parse_continue_statement(&mut self) -> Result<Stmt, ParserError> {
+        let span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1;
+        self.match_token(&TokenType::分号);
+
+        Ok(Stmt::Continue(ContinueStmt::new(None, span)))
+    }
+
+    /**
+     * 解析块语句
+     */
+    fn parse_block_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        self.position += 1; // 消耗 '{'
+
+        let statements = self.parse_statement_list()?;
+
+        self.expect(&TokenType::右花括号)?;
+
+        Ok(Stmt::Block(BlockStmt::new(statements, start_span)))
+    }
+
+    /**
+     * 解析表达式
+     * 使用运算符优先级解析
+     */
+    fn parse_expression(&mut self) -> Result<Expr, ParserError> {
+        self.parse_assignment_expression()
+    }
+
+    /**
+     * 解析赋值表达式
+     */
+    fn parse_assignment_expression(&mut self) -> Result<Expr, ParserError> {
+        let left = self.parse_or_expression()?;
+
+        if self.match_token(&TokenType::赋值) {
+            let right = self.parse_assignment_expression()?;
+            let span = left.span().merge(right.span());
+            return Ok(Expr::Binary(BinaryExpr::new(
+                BinaryOp::Assign,
+                Box::new(left),
+                Box::new(right),
+                span
+            )));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析逻辑或 (||)
+     */
+    fn parse_or_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_and_expression()?;
+
+        while self.match_token(&TokenType::或) {
+            let right = self.parse_and_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Or,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析逻辑与 (&&)
+     */
+    fn parse_and_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_equality_expression()?;
+
+        while self.match_token(&TokenType::与) {
+            let right = self.parse_equality_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::And,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析相等性比较 (==, !=)
+     */
+    fn parse_equality_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_comparison_expression()?;
+
+        while self.match_token(&TokenType::等于) {
+            let right = self.parse_comparison_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Eq,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::不等于) {
+            let right = self.parse_comparison_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Ne,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析比较运算 (>, <, >=, <=)
+     */
+    fn parse_comparison_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_additive_expression()?;
+
+        while self.match_token(&TokenType::大于) {
+            let right = self.parse_additive_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Gt,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::小于) {
+            let right = self.parse_additive_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Lt,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::大于等于) {
+            let right = self.parse_additive_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Ge,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::小于等于) {
+            let right = self.parse_additive_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Le,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析加法运算 (+, -)
+     */
+    fn parse_additive_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_bitwise_expression()?;
+
+        while self.match_token(&TokenType::加) {
+            let right = self.parse_bitwise_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Add,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::减) {
+            let right = self.parse_bitwise_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Sub,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析乘法运算 (*, /, %)
+     */
+    fn parse_multiplicative_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_unary_expression()?;
+
+        while self.match_token(&TokenType::乘) {
+            let right = self.parse_unary_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Mul,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::除) {
+            let right = self.parse_unary_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Div,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        } while self.match_token(&TokenType::取余) {
+            let right = self.parse_unary_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::Rem,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析位运算 (&, |, ^)
+     */
+    fn parse_bitwise_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut left = self.parse_multiplicative_expression()?;
+
+        while self.match_token(&TokenType::位与) {
+            let right = self.parse_multiplicative_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::BitAnd,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        while self.match_token(&TokenType::位异或) {
+            let right = self.parse_multiplicative_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::BitXor,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        while self.match_token(&TokenType::位或) {
+            let right = self.parse_multiplicative_expression()?;
+            let span = left.span().merge(right.span());
+            left = Expr::Binary(BinaryExpr::new(
+                BinaryOp::BitOr,
+                Box::new(left),
+                Box::new(right),
+                span
+            ));
+        }
+
+        Ok(left)
+    }
+
+    /**
+     * 解析一元表达式 (!, -, ~)
+     */
+    fn parse_unary_expression(&mut self) -> Result<Expr, ParserError> {
+        if self.match_token(&TokenType::非) {
+            let operand = Box::new(self.parse_unary_expression()?);
+            let span = operand.span();
+            return Ok(Expr::Unary(UnaryExpr::new(UnaryOp::Not, operand, span)));
+        }
+        
+        if self.match_token(&TokenType::减) {
+            let operand = Box::new(self.parse_unary_expression()?);
+            let span = operand.span();
+            return Ok(Expr::Unary(UnaryExpr::new(UnaryOp::Neg, operand, span)));
+        }
+
+        if self.match_token(&TokenType::位非) {
+            let operand = Box::new(self.parse_unary_expression()?);
+            let span = operand.span();
+            return Ok(Expr::Unary(UnaryExpr::new(UnaryOp::BitNot, operand, span)));
+        }
+
+        self.parse_postfix_expression()
+    }
+
+    /**
+     * 解析后缀表达式 (函数调用, 成员访问, 数组访问)
+     */
+    fn parse_postfix_expression(&mut self) -> Result<Expr, ParserError> {
+        let mut expr = self.parse_primary_expression()?;
+
+        loop {
+            // 函数调用: expr '(' args ')'
+            if self.match_token(&TokenType::左圆括号) {
+                let mut arguments = Vec::new();
+                
+                if !self.check(&TokenType::右圆括号) {
+                    arguments.push(self.parse_expression()?);
+                    while self.match_token(&TokenType::逗号) {
+                        arguments.push(self.parse_expression()?);
+                    }
+                }
+
+                self.expect(&TokenType::右圆括号)?;
+                let span = expr.span();
+                expr = Expr::Call(CallExpr::new(Box::new(expr), arguments, span));
+            }
+            // 成员访问: expr '.' 标识符
+            else if self.match_token(&TokenType::句号) {
+                let member = match self.current() {
+                    Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                        literal.clone()
+                    }
+                    _ => {
+                        return Err(ParserError::unexpected_token(
+                            "成员名",
+                            &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                            self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                        ));
+                    }
+                };
+                self.position += 1;
+                let span = expr.span();
+                expr = Expr::MemberAccess(MemberAccessExpr::new(Box::new(expr), member, span));
+            }
+            // 数组访问: expr '[' expr ']'
+            else if self.match_token(&TokenType::左方括号) {
+                let index = self.parse_expression()?;
+                self.expect(&TokenType::右方括号)?;
+                // TODO: 数组访问 AST
+                let span = expr.span();
+                expr = Expr::MemberAccess(MemberAccessExpr::new(Box::new(expr), "[index]".to_string(), span));
+            }
+            else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    /**
+     * 解析基本表达式 (字面量, 标识符, 分组)
+     */
+    fn parse_primary_expression(&mut self) -> Result<Expr, ParserError> {
+        let token = self.current()
+            .ok_or_else(|| ParserError::unexpected_token_at(1, 1, "期望表达式"))?;
+
+        let result = match &token.token_type {
+            // 标识符
+            TokenType::标识符 => {
+                let name = token.literal.clone();
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Identifier(IdentifierExpr::new(name, span)))
+            }
+
+            // 整数字面量
+            TokenType::整数字面量 => {
+                let value: i64 = token.literal.parse()
+                    .unwrap_or(0);
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Literal(LiteralExpr::new(
+                    LiteralKind::Integer(value),
+                    span
+                )))
+            }
+
+            // 浮点数字面量
+            TokenType::浮点字面量 => {
+                let value: f64 = token.literal.parse()
+                    .unwrap_or(0.0);
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Literal(LiteralExpr::new(
+                    LiteralKind::Float(value),
+                    span
+                )))
+            }
+
+            // 文本字面量
+            TokenType::文本字面量 => {
+                let value = token.literal.clone();
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Literal(LiteralExpr::new(
+                    LiteralKind::String(value),
+                    span
+                )))
+            }
+
+            // 字符字面量
+            TokenType::字符字面量 => {
+                let ch = token.literal.chars().next().unwrap_or('\0');
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Literal(LiteralExpr::new(
+                    LiteralKind::Char(ch),
+                    span
+                )))
+            }
+
+            // 布尔字面量
+            TokenType::布尔字面量 => {
+                let value = token.literal == "真";
+                let span = token.span;
+                self.position += 1;
+                Ok(Expr::Literal(LiteralExpr::new(
+                    LiteralKind::Boolean(value),
+                    span
+                )))
+            }
+
+            // 分组表达式: '(' expr ')'
+            TokenType::左圆括号 => {
+                self.position += 1;
+                let expr = self.parse_expression()?;
+                self.expect(&TokenType::右圆括号)?;
+                Ok(Expr::Grouped(Box::new(expr)))
+            }
+
+            // 未知 token
+            _ => {
+                Err(ParserError::unexpected_token(
+                    "表达式",
+                    &token.literal,
+                    token.span
+                ))
+            }
+        };
+        
+        result
+    }
+}
+
+/**
+ * 解析辅助函数
+ */
+pub fn parse(tokens: Vec<Token>) -> Result<Module, ParserError> {
+    let mut parser = Parser::new(tokens);
+    parser.parse_module()
+}
