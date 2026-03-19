@@ -471,8 +471,9 @@ impl Parser {
         };
         self.position += 1;
 
-        // 消耗 '函数' 关键字 (函数名后的 '函数')
-        self.expect(&TokenType::Keyword(Keyword::函数))?;
+        // 可选的 '函数' 关键字 (函数名后的 '函数')
+        // 支持两种语法: 函数 主() 和 函数 主 函数()
+        let _ = self.match_token(&TokenType::Keyword(Keyword::函数));
 
         // 参数列表
         let params = self.parse_parameter_list()?;

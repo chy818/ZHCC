@@ -497,8 +497,8 @@ impl SemanticAnalyzer {
         for branch in &if_stmt.branches {
             let cond_type = self.analyze_expression(&branch.condition)?;
             
-            // 条件必须是布尔类型
-            if cond_type != Type::Bool {
+            // 条件必须是布尔类型、整数类型或字符串类型（用于比较结果）
+            if cond_type != Type::Bool && cond_type != Type::Int && cond_type != Type::String {
                 self.error(
                     format!("if 条件必须是布尔类型，但找到 {:?}", cond_type),
                     branch.condition.span(),

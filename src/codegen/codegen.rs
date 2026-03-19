@@ -139,23 +139,16 @@ impl CodeGenerator {
         self.emit("");
         self.emit("; ==================== 字符串常量 ====================");
         self.emit("");
-
-        // 生成字符串常量
         self.generate_string_constants();
         
         self.emit("");
-        self.emit("; ==================== 主函数 ====================");
+        self.emit("; ==================== 用户函数 ====================");
         self.emit("");
-        self.emit("define i32 @main() {");
-        self.indent += 1;
 
         // 生成每个函数的 IR
         for func in &module.functions {
             self.generate_function(func)?;
         }
-
-        self.indent -= 1;
-        self.emit("}");
 
         Ok(self.ir_output.clone())
     }
@@ -180,9 +173,29 @@ impl CodeGenerator {
      * 生成函数
      */
     fn generate_function(&mut self, func: &Function) -> Result<(), CodegenError> {
-        // 函数头
+        // 函数头 - 生成函数签名
         let ret_type = type_to_llvm(&func.return_type);
+        
+        // 生成参数列表
+        let mut param_strs = Vec::new();
+        for param in &func.params {
+            let param_type = type_to_llvm(&param.param_type);
+            param_strs.push(format!("{} %{}", param_type, param.name));
+        }
+        let params_str = param_strs.join(", ");
+        
+        self.emit(&format!("define {} @{}({}) {{", ret_type, func.name, params_str));
         self.emit(&format!("; 函数: {}", func.name));
+        
+        // 为每个参数创建分配指令
+        for param in &func.params {
+            let param_type = type_to_llvm(&param.param_type);
+            let alloca = self.new_label("param");
+            self.emit(&format!("%{} = alloca {}", alloca, param_type));
+            self.emit(&format!("store {} %{}, {}* %{}", param_type, param.name, param_type, alloca));
+            self.variables.insert(param.name.clone(), alloca);
+            self.variable_types.insert(param.name.clone(), param_type.to_string());
+        }
 
         // 检查函数是否有显式返回语句
         let has_return = func.body.statements.iter().any(|stmt| {
@@ -202,6 +215,9 @@ impl CodeGenerator {
                 self.emit("ret i32 0");
             }
         }
+
+        self.emit("}");
+        self.emit("");
 
         Ok(())
     }
