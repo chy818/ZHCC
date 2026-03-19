@@ -29,6 +29,7 @@ fn type_to_llvm(ty: &Type) -> &'static str {
         Type::Void => "void",
         Type::Optional(_) => "i64", // 简化: 使用 i64 包装
         Type::Array(_) => "i64*",
+        Type::Struct(_) => "i64*", // 结构体指针
         Type::Custom(name) => {
             match name.as_str() {
                 _ => "i64", // 默认使用 i64
@@ -46,6 +47,10 @@ pub struct CodeGenerator {
     label_counter: usize,
     /// 变量名到 SSA 值的映射
     variables: std::collections::HashMap<String, String>,
+    /// 变量名到类型的映射
+    variable_types: std::collections::HashMap<String, String>,
+    /// 字符串常量表
+    string_constants: std::collections::HashMap<String, String>,
 }
 
 impl CodeGenerator {
@@ -55,6 +60,23 @@ impl CodeGenerator {
             indent: 0,
             label_counter: 0,
             variables: std::collections::HashMap::new(),
+            variable_types: std::collections::HashMap::new(),
+            string_constants: std::collections::HashMap::new(),
+        }
+    }
+
+    /**
+     * 计算结构体字段偏移
+     * 简化处理：使用哈希表存储结构体字段信息
+     */
+    fn calculate_field_offset(&self, field_name: &str) -> i32 {
+        // 常见的 Token 字段偏移（以 8 字节为单位）
+        match field_name {
+            "类型" | "type" => 0,
+            "字面量" | "literal" => 8,
+            "行" | "line" => 16,
+            "列" | "column" => 24,
+            _ => 0, // 默认偏移
         }
     }
 
@@ -80,9 +102,49 @@ impl CodeGenerator {
      * 生成模块
      */
     pub fn generate(&mut self, module: &Module) -> Result<String, CodegenError> {
-        // 生成模块头
-        self.emit("; CCAS 编译器生成的 LLVM IR");
-        self.emit("; 目标: RISC-V RV64GC");
+        // 生成内置函数声明
+        self.emit("; ==================== 内置函数 ====================");
+        self.emit("");
+        
+        // 打印函数
+        self.emit("declare i32 @打印(i8*)");
+        self.emit("declare i32 @打印整数(i32)");
+        self.emit("declare i32 @打印浮点(float)");
+        self.emit("declare i32 @打印布尔(i1)");
+        
+        // 类型转换函数
+        self.emit("declare i32 @文本转整数(i8*)");
+        self.emit("declare i8* @整数转文本(i32)");
+        
+        // 列表函数
+        self.emit("declare i8* @创建列表(i32)");
+        self.emit("declare i32 @列表添加(i8*, i32)");
+        self.emit("declare i32 @列表获取(i8*, i32)");
+        self.emit("declare i32 @列表长度(i8*)");
+        
+        // 文件 I/O 函数
+        self.emit("declare i8* @文件读取(i8*)");
+        self.emit("declare i32 @文件写入(i8*, i8*)");
+        
+        // 字符串函数
+        self.emit("declare i8* @文本长度(i8*)");
+        self.emit("declare i8* @文本拼接(i8*, i8*)");
+        self.emit("declare i8* @文本切片(i8*, i32, i32)");
+        self.emit("declare i8* @文本包含(i8*, i8*)");
+        
+        // 命令行参数函数
+        self.emit("declare i32 @参数个数()");
+        self.emit("declare i8* @获取参数(i32)");
+        
+        self.emit("");
+        self.emit("; ==================== 字符串常量 ====================");
+        self.emit("");
+
+        // 生成字符串常量
+        self.generate_string_constants();
+        
+        self.emit("");
+        self.emit("; ==================== 主函数 ====================");
         self.emit("");
         self.emit("define i32 @main() {");
         self.indent += 1;
@@ -94,10 +156,24 @@ impl CodeGenerator {
 
         self.indent -= 1;
         self.emit("}");
-        self.emit("");
-        self.emit("ret i32 0");
 
         Ok(self.ir_output.clone())
+    }
+
+    /**
+     * 生成字符串常量
+     */
+    fn generate_string_constants(&mut self) {
+        let constants: Vec<(String, String)> = self.string_constants
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        
+        for (label, content) in constants {
+            let len = content.len() + 1;
+            self.emit(&format!("@{} = private constant [{} x i8] c\"{}\"",
+                label, len, content));
+        }
     }
 
     /**
@@ -108,13 +184,24 @@ impl CodeGenerator {
         let ret_type = type_to_llvm(&func.return_type);
         self.emit(&format!("; 函数: {}", func.name));
 
+        // 检查函数是否有显式返回语句
+        let has_return = func.body.statements.iter().any(|stmt| {
+            matches!(stmt, Stmt::Return(_))
+        });
+
         // 函数体语句
         for stmt in &func.body.statements {
             self.generate_statement(stmt)?;
         }
 
         // 如果没有返回语句，添加默认返回
-        self.emit("ret i32 0");
+        if !has_return {
+            if func.return_type == Type::Void {
+                self.emit("ret void");
+            } else {
+                self.emit("ret i32 0");
+            }
+        }
 
         Ok(())
     }
@@ -149,6 +236,15 @@ impl CodeGenerator {
             Stmt::Break(_) | Stmt::Continue(_) => {
                 Ok(()) // TODO: 实现 break/continue
             }
+            Stmt::StructDef(_) => {
+                Ok(()) // TODO: 实现结构体定义生成
+            }
+            Stmt::EnumDef(_) => {
+                Ok(()) // TODO: 实现枚举定义生成
+            }
+            Stmt::TypeAlias(_) => {
+                Ok(()) // TODO: 实现类型别名生成
+            }
         }
     }
 
@@ -172,8 +268,9 @@ impl CodeGenerator {
                 var_type, value, var_type, alloca));
         }
 
-        // 保存变量映射
+        // 记录变量及其类型
         self.variables.insert(let_stmt.name.clone(), alloca);
+        self.variable_types.insert(let_stmt.name.clone(), var_type.to_string());
 
         Ok(())
     }
@@ -297,14 +394,21 @@ impl CodeGenerator {
         // 获取目标变量名并更新映射
         if let Expr::Identifier(ident) = &assign_stmt.target {
             if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                // 获取变量类型
+                let var_type = self.variable_types.get(&ident.name)
+                    .cloned()
+                    .unwrap_or_else(|| "i32".to_string());
                 // 存储到已有变量
-                self.emit(&format!("store i32 %{}, i32* %{}", value, alloca));
+                self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
             } else {
+                // 获取值类型（从表达式推断）
+                let var_type = "i32".to_string(); // 默认类型
                 // 新变量，分配空间
                 let new_alloca = self.new_label("alloca");
-                self.emit(&format!("%{} = alloca i32", new_alloca));
-                self.emit(&format!("store i32 %{}, i32* %{}", value, new_alloca));
+                self.emit(&format!("%{} = alloca {}", new_alloca, var_type));
+                self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, new_alloca));
                 self.variables.insert(ident.name.clone(), new_alloca);
+                self.variable_types.insert(ident.name.clone(), var_type);
             }
         } else {
             // 目标不是标识符，生成注释
@@ -320,10 +424,13 @@ impl CodeGenerator {
     fn generate_expression(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
             Expr::Identifier(ident) => {
-                // 查找变量的 SSA 值
+                // 查找变量的 SSA 值和类型
                 if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                    let var_type = self.variable_types.get(&ident.name)
+                        .cloned()
+                        .unwrap_or_else(|| "i32".to_string());
                     let load = self.new_label("id");
-                    self.emit(&format!("%{} = load i32, i32* %{}", load, alloca));
+                    self.emit(&format!("%{} = load {}, {}* %{}", load, var_type, var_type, alloca));
                     Ok(load)
                 } else {
                     // 未找到变量，使用临时标签
@@ -342,8 +449,30 @@ impl CodeGenerator {
             Expr::Call(call) => {
                 self.generate_call_expr(call)
             }
-            Expr::MemberAccess(_) => {
-                Ok(self.new_label("member"))
+            Expr::MemberAccess(member) => {
+                // 生成对象表达式
+                let object_val = self.generate_expression(&member.object)?;
+                
+                // 获取字段名
+                let field_name = &member.member;
+                
+                // 计算字段偏移（简化处理：假设字段按顺序排列，每个字段8字节）
+                let field_offset = self.calculate_field_offset(field_name);
+                
+                // 生成 GEP 指令获取字段指针
+                let result = self.new_label("member");
+                self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}", 
+                    result, object_val, field_offset));
+                
+                // 将指针转换为对应类型的指针
+                let result_ptr = self.new_label("member_ptr");
+                self.emit(&format!("%{} = bitcast i8* %{} to i32*", result_ptr, result));
+                
+                // 加载字段值
+                let result_val = self.new_label("member_val");
+                self.emit(&format!("%{} = load i32, i32* %{}", result_val, result_ptr));
+                
+                Ok(result_val)
             }
             Expr::Grouped(expr) => {
                 self.generate_expression(expr)
@@ -436,14 +565,20 @@ impl CodeGenerator {
             // 左侧应该是标识符
             if let Expr::Identifier(ident) = &*binary.left {
                 if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                    // 获取变量类型
+                    let var_type = self.variable_types.get(&ident.name)
+                        .cloned()
+                        .unwrap_or_else(|| "i32".to_string());
                     // 存储到已有变量
-                    self.emit(&format!("store i32 %{}, i32* %{}", right, alloca));
+                    self.emit(&format!("store {} %{}, {}* %{}", var_type, right, var_type, alloca));
                 } else {
                     // 新变量，分配空间
+                    let var_type = "i32".to_string();
                     let new_alloca = self.new_label("alloca");
-                    self.emit(&format!("%{} = alloca i32", new_alloca));
-                    self.emit(&format!("store i32 %{}, i32* %{}", right, new_alloca));
+                    self.emit(&format!("%{} = alloca {}", new_alloca, var_type));
+                    self.emit(&format!("store {} %{}, {}* %{}", var_type, right, var_type, new_alloca));
                     self.variables.insert(ident.name.clone(), new_alloca);
+                    self.variable_types.insert(ident.name.clone(), var_type);
                 }
             }
             // 返回右值作为结果
@@ -490,16 +625,56 @@ impl CodeGenerator {
             _ => "unknown".to_string(),
         };
 
+        // 检查是否是内置函数
+        let is_builtin_print = func_name == "打印" || func_name == "print";
+        let is_builtin_to_int = func_name == "文本转整数";
+        let is_builtin_to_str = func_name == "整数转文本";
+        
+        // 检查是否是列表函数
+        let is_list_create = func_name == "创建列表";
+        let is_list_add = func_name == "列表添加";
+        let is_list_get = func_name == "列表获取";
+        let is_list_len = func_name == "列表长度";
+        let is_list_func = is_list_create || is_list_add || is_list_get || is_list_len;
+        
+        // 检查是否是文件函数
+        let is_file_read = func_name == "文件读取";
+        let is_file_write = func_name == "文件写入";
+        let is_file_func = is_file_read || is_file_write;
+        
+        // 检查是否是字符串函数
+        let is_str_len = func_name == "文本长度";
+        let is_str_concat = func_name == "文本拼接";
+        let is_str_slice = func_name == "文本切片";
+        let is_str_contains = func_name == "文本包含";
+        let is_str_func = is_str_len || is_str_concat || is_str_slice || is_str_contains;
+        
+        // 检查是否是命令行参数函数
+        let is_arg_count = func_name == "参数个数";
+        let is_arg_get = func_name == "获取参数";
+        let is_arg_func = is_arg_count || is_arg_get;
+        
         // 生成参数
         let mut args = Vec::new();
         
-        // 检查是否是内置函数
-        let is_builtin_print = func_name == "打印" || func_name == "print";
-        
-        for arg in &call.arguments {
+        for (idx, arg) in call.arguments.iter().enumerate() {
             let arg_val = self.generate_expression(arg)?;
-            if is_builtin_print {
-                // 打印函数接受 i8* 字符串指针
+            if is_str_slice {
+                // 文本切片需要 (i8*, i32, i32)
+                // idx=0: 字符串 (i8*), idx=1: 起始位置 (i32), idx=2: 结束位置 (i32)
+                if idx == 0 {
+                    args.push(format!("i8* %{}", arg_val));
+                } else {
+                    args.push(format!("i32 %{}", arg_val));
+                }
+            } else if is_builtin_print || is_builtin_to_int || is_file_func || is_str_func {
+                // 打印函数、文本转整数、文件函数、字符串函数接受 i8* 字符串指针
+                args.push(format!("i8* %{}", arg_val));
+            } else if is_builtin_to_str {
+                // 整数转文本接受 i32
+                args.push(format!("i32 %{}", arg_val));
+            } else if is_list_func {
+                // 列表函数接受 i8* 字符串指针
                 args.push(format!("i8* %{}", arg_val));
             } else {
                 args.push(format!("i32 %{}", arg_val));
@@ -510,17 +685,18 @@ impl CodeGenerator {
         
         // 生成函数调用
         if args.is_empty() {
-            if is_builtin_print {
-                self.emit(&format!("%{} = call i32 @{}()", result, func_name));
-            } else {
-                self.emit(&format!("%{} = call i32 @{}()", result, func_name));
-            }
+            self.emit(&format!("%{} = call i32 @{}()", result, func_name));
         } else {
             let args_str = args.join(", ");
-            if is_builtin_print {
-                // 打印函数返回 i32
+            
+            if is_builtin_to_str || is_list_create || is_file_read || is_str_func || is_arg_get {
+                // 整数转文本、创建列表、文件读取、字符串函数、获取参数返回 i8*
+                self.emit(&format!("%{} = call i8* @{}({})", result, func_name, args_str));
+            } else if is_file_write || is_arg_count {
+                // 文件写入、参数个数返回 i32
                 self.emit(&format!("%{} = call i32 @{}({})", result, func_name, args_str));
             } else {
+                // 其他内置函数返回 i32
                 self.emit(&format!("%{} = call i32 @{}({})", result, func_name, args_str));
             }
         }

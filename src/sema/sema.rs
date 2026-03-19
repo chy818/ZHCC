@@ -32,6 +32,7 @@ pub struct Symbol {
 pub struct Scope {
     parent: Option<usize>,
     symbols: std::collections::HashMap<String, Symbol>,
+    types: std::collections::HashMap<String, Type>,
 }
 
 impl Scope {
@@ -39,6 +40,7 @@ impl Scope {
         Self {
             parent,
             symbols: std::collections::HashMap::new(),
+            types: std::collections::HashMap::new(),
         }
     }
 
@@ -55,6 +57,26 @@ impl Scope {
             }
         })
     }
+
+    /**
+     * 添加类型定义
+     */
+    pub fn add_type(&mut self, name: &str, type_info: Type) {
+        self.types.insert(name.to_string(), type_info);
+    }
+
+    /**
+     * 查找类型定义
+     */
+    pub fn lookup_type(&self, name: &str) -> Option<&Type> {
+        self.types.get(name).or_else(|| {
+            if let Some(parent_idx) = self.parent {
+                None // 简化处理
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /**
@@ -63,13 +85,18 @@ impl Scope {
 pub struct SemanticAnalyzer {
     scopes: Vec<Scope>,
     errors: Vec<TypeError>,
+    import_stack: Vec<String>,
 }
 
 impl SemanticAnalyzer {
     pub fn new() -> Self {
         let mut scopes = Vec::new();
         scopes.push(Scope::new(None)); // 全局作用域
-        Self { scopes, errors: Vec::new() }
+        Self { 
+            scopes, 
+            errors: Vec::new(),
+            import_stack: Vec::new(),
+        }
     }
 
     /**
@@ -128,7 +155,30 @@ impl SemanticAnalyzer {
      * 验证模块
      */
     pub fn analyze_module(&mut self, module: &Module) -> Result<(), Vec<TypeError>> {
-        // 首先收集所有函数声明到全局作用域
+        // 首先注册内置函数
+        self.register_builtin_functions()?;
+
+        // 处理导入语句
+        for import in &module.imports {
+            self.process_import(import)?;
+        }
+
+        // 收集所有结构体定义到全局作用域
+        for struct_def in &module.structs {
+            self.register_struct(struct_def)?;
+        }
+
+        // 收集所有枚举定义到全局作用域
+        for enum_def in &module.enums {
+            self.register_enum(enum_def)?;
+        }
+
+        // 收集所有类型别名到全局作用域
+        for type_alias in &module.type_aliases {
+            self.register_type_alias(type_alias)?;
+        }
+
+        // 收集所有函数声明到全局作用域
         for func in &module.functions {
             self.define_symbol(
                 func.name.clone(),
@@ -148,6 +198,100 @@ impl SemanticAnalyzer {
         } else {
             Err(std::mem::take(&mut self.errors))
         }
+    }
+
+    /**
+     * 处理导入语句
+     */
+    fn process_import(&mut self, import: &ImportStmt) -> Result<(), Vec<TypeError>> {
+        let module_path = &import.module_path;
+        
+        // 解析模块路径 (去除引号和.xy后缀)
+        let module_name = module_path.trim_matches('"').trim_end_matches(".xy");
+        
+        // 检查循环导入
+        if self.import_stack.contains(&module_name.to_string()) {
+            self.errors.push(TypeError {
+                code: "E0428".to_string(),
+                message: format!("检测到循环导入: {}", module_name),
+                span: import.span.clone(),
+            });
+            return Ok(());
+        }
+
+        // 将当前模块添加到导入栈
+        self.import_stack.push(module_name.to_string());
+
+        // 尝试加载模块文件
+        let imported_module = self.load_module(module_path)?;
+        
+        // 递归分析导入的模块
+        self.analyze_module(&imported_module)?;
+
+        // 从导入栈中移除
+        self.import_stack.pop();
+
+        // 将导入的符号添加到当前作用域
+        for func in &imported_module.functions {
+            self.define_symbol(
+                func.name.clone(),
+                func.return_type.clone(),
+                false,
+                func.span.clone(),
+            );
+        }
+
+        for struct_def in &imported_module.structs {
+            let struct_type = Type::Struct(struct_def.name.clone());
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.add_type(&struct_def.name, struct_type);
+            }
+        }
+
+        for enum_def in &imported_module.enums {
+            let enum_type = Type::Custom(enum_def.name.clone());
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.add_type(&enum_def.name, enum_type);
+            }
+        }
+
+        Ok(())
+    }
+
+    /**
+     * 加载模块文件
+     */
+    fn load_module(&self, module_path: &str) -> Result<Module, Vec<TypeError>> {
+        // 去除引号
+        let path = module_path.trim_matches('"');
+        
+        // 读取模块文件
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| vec![TypeError {
+                code: "E0428".to_string(),
+                message: format!("无法加载模块 '{}': {}", path, e),
+                span: Span::dummy(),
+            }])?;
+
+        // 词法分析
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize()
+            .map_err(|e| vec![TypeError {
+                code: "E0428".to_string(),
+                message: format!("模块词法错误: {:?}", e),
+                span: Span::dummy(),
+            }])?;
+
+        // 语法分析
+        let mut parser = crate::parser::Parser::new(tokens);
+        let module = parser.parse_module()
+            .map_err(|e| vec![TypeError {
+                code: "E0428".to_string(),
+                message: format!("模块语法错误: {:?}", e),
+                span: Span::dummy(),
+            }])?;
+
+        Ok(module)
     }
 
     /**
@@ -214,7 +358,88 @@ impl SemanticAnalyzer {
             Stmt::Assignment(assign_stmt) => {
                 self.analyze_assignment_statement(assign_stmt)
             }
+            Stmt::StructDef(struct_def) => {
+                // 注册结构体到符号表
+                self.register_struct(struct_def)
+            }
+            Stmt::EnumDef(enum_def) => {
+                // 注册枚举到符号表
+                self.register_enum(enum_def)
+            }
+            Stmt::TypeAlias(type_alias) => {
+                // 注册类型别名
+                self.register_type_alias(type_alias)
+            }
         }
+    }
+
+    /**
+     * 注册内置函数
+     */
+    fn register_builtin_functions(&mut self) -> Result<(), Vec<TypeError>> {
+        // 打印函数
+        self.define_symbol("打印".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("打印整数".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("打印浮点".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("打印布尔".to_string(), Type::Int, false, Span::dummy());
+        
+        // 类型转换函数
+        self.define_symbol("文本转整数".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("整数转文本".to_string(), Type::String, false, Span::dummy());
+        
+        // 列表函数
+        self.define_symbol("创建列表".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("列表添加".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("列表获取".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("列表长度".to_string(), Type::Int, false, Span::dummy());
+        
+        // 文件 I/O 函数
+        self.define_symbol("文件读取".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("文件写入".to_string(), Type::Int, false, Span::dummy());
+        
+        // 字符串函数
+        self.define_symbol("文本长度".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("文本拼接".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("文本切片".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("文本包含".to_string(), Type::String, false, Span::dummy());
+        
+        // 命令行参数函数
+        self.define_symbol("参数个数".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("获取参数".to_string(), Type::String, false, Span::dummy());
+        
+        Ok(())
+    }
+
+    /**
+     * 注册结构体到符号表
+     */
+    fn register_struct(&mut self, struct_def: &StructDefinition) -> Result<Type, Vec<TypeError>> {
+        let struct_type = Type::Struct(struct_def.name.clone());
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.add_type(&struct_def.name, struct_type.clone());
+        }
+        Ok(Type::Void)
+    }
+
+    /**
+     * 注册枚举到符号表
+     */
+    fn register_enum(&mut self, enum_def: &EnumDefinition) -> Result<Type, Vec<TypeError>> {
+        let enum_type = Type::Custom(enum_def.name.clone());
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.add_type(&enum_def.name, enum_type.clone());
+        }
+        Ok(Type::Void)
+    }
+
+    /**
+     * 注册类型别名
+     */
+    fn register_type_alias(&mut self, type_alias: &TypeAlias) -> Result<Type, Vec<TypeError>> {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.add_type(&type_alias.name, type_alias.aliased_type.clone());
+        }
+        Ok(Type::Void)
     }
 
     /**
@@ -504,7 +729,21 @@ impl SemanticAnalyzer {
      * 验证成员访问表达式
      */
     fn analyze_member_expression(&self, member: &MemberAccessExpr) -> Result<Type, Vec<TypeError>> {
-        // 简化处理
+        // 分析对象表达式
+        let object_type = self.analyze_expression(&member.object)?;
+        
+        // 检查是否是结构体类型
+        if let Type::Struct(struct_name) = &object_type {
+            // 查找结构体定义
+            if let Some(scope) = self.scopes.last() {
+                if let Some(struct_type) = scope.lookup_type(struct_name) {
+                    // 结构体类型已注册，简化处理返回整数
+                    return Ok(Type::Int);
+                }
+            }
+        }
+        
+        // 简化处理：返回整数类型
         Ok(Type::Int)
     }
 }

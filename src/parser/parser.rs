@@ -49,6 +49,26 @@ impl Parser {
     }
 
     /**
+     * 向前移动一个位置，返回前一个 Token
+     */
+    fn advance(&mut self) -> Option<&Token> {
+        let result = self.tokens.get(self.position);
+        self.position += 1;
+        result
+    }
+
+    /**
+     * 返回前一个 Token
+     */
+    fn previous(&self) -> Option<&Token> {
+        if self.position > 0 {
+            self.tokens.get(self.position - 1)
+        } else {
+            None
+        }
+    }
+
+    /**
      * 检查当前 Token 是否为指定类型
      */
     fn check(&self, token_type: &TokenType) -> bool {
@@ -119,18 +139,48 @@ impl Parser {
 
     /**
      * 解析整个模块
-     * 模块 -> 函数列表
+     * 模块 -> 导入列表? (函数|结构体|枚举|类型别名)*
      */
     pub fn parse_module(&mut self) -> Result<Module, ParserError> {
+        let mut imports = Vec::new();
         let mut functions = Vec::new();
+        let mut structs = Vec::new();
+        let mut enums = Vec::new();
+        let mut type_aliases = Vec::new();
         let start_span = self.current()
             .map(|t| t.span)
             .unwrap_or(Span::dummy());
 
         while !self.check(&TokenType::文件结束) {
-            match self.parse_function() {
-                Ok(func) => functions.push(func),
-                Err(e) => return Err(e),
+            // 根据关键字类型分发解析
+            if self.check(&TokenType::Keyword(Keyword::引入)) {
+                match self.parse_import() {
+                    Ok(imp) => imports.push(imp),
+                    Err(e) => return Err(e),
+                }
+            } else if self.check(&TokenType::Keyword(Keyword::函数)) {
+                match self.parse_function() {
+                    Ok(func) => functions.push(func),
+                    Err(e) => return Err(e),
+                }
+            } else if self.check(&TokenType::Keyword(Keyword::结构体)) {
+                match self.parse_struct() {
+                    Ok(s) => structs.push(s),
+                    Err(e) => return Err(e),
+                }
+            } else if self.check(&TokenType::Keyword(Keyword::枚举)) {
+                match self.parse_enum() {
+                    Ok(e) => enums.push(e),
+                    Err(e) => return Err(e),
+                }
+            } else if self.check(&TokenType::Keyword(Keyword::类型别名)) {
+                match self.parse_type_alias() {
+                    Ok(t) => type_aliases.push(t),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                // 跳过无法识别的声明，继续解析
+                self.advance();
             }
         }
 
@@ -138,7 +188,264 @@ impl Parser {
             .map(|t| t.span)
             .unwrap_or(start_span);
 
-        Ok(Module::new(functions, start_span.merge(end_span)))
+        let mut module = Module::new(functions, start_span.merge(end_span));
+        module.imports = imports;
+        module.structs = structs;
+        module.enums = enums;
+        module.type_aliases = type_aliases;
+        Ok(module)
+    }
+
+    /**
+     * 解析导入语句
+     * 引入 "模块路径"
+     * 引入 "模块路径" { 项1, 项2 }
+     */
+    fn parse_import(&mut self) -> Result<ImportStmt, ParserError> {
+        // 消耗 '引入' 关键字
+        self.expect(&TokenType::Keyword(Keyword::引入))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 解析模块路径 (字符串字面量)
+        let module_path = match self.current() {
+            Some(Token { token_type: TokenType::文本字面量, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "模块路径",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 解析可选的导入项列表 { 项1, 项2 }
+        let mut imported_items = Vec::new();
+        if self.check(&TokenType::左花括号) {
+            self.advance();
+            while !self.check(&TokenType::右花括号) {
+                match self.current() {
+                    Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                        imported_items.push(literal.clone());
+                        self.advance();
+                        // 跳过逗号
+                        if self.check(&TokenType::逗号) {
+                            self.advance();
+                        }
+                    }
+                    _ => {
+                        return Err(ParserError::unexpected_token(
+                            "导入项",
+                            &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                            self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                        ));
+                    }
+                }
+            }
+            self.expect(&TokenType::右花括号)?;
+        }
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(ImportStmt {
+            module_path,
+            imported_items,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析结构体定义
+     * 结构体 用户 { 姓名: 文本, 年龄: 整数 }
+     */
+    fn parse_struct(&mut self) -> Result<StructDefinition, ParserError> {
+        // 消耗 '结构体' 关键字
+        self.expect(&TokenType::Keyword(Keyword::结构体))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 结构体名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "结构体名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 期望 '{'
+        self.expect(&TokenType::左花括号)?;
+        
+        // 解析字段列表
+        let mut fields = Vec::new();
+        while !self.check(&TokenType::右花括号) {
+            // 解析字段: 标识符 ':' 类型
+            let field_name = match self.current() {
+                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                    literal.clone()
+                }
+                _ => {
+                    return Err(ParserError::unexpected_token(
+                        "字段名",
+                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                    ));
+                }
+            };
+            self.advance();
+            
+            // 期望 ':'
+            self.expect(&TokenType::冒号)?;
+            
+            // 解析类型
+            let field_type = self.parse_type()?;
+            
+            fields.push(StructField {
+                name: field_name,
+                field_type,
+            });
+            
+            // 检查 ',' 或 '}'
+            if self.check(&TokenType::逗号) {
+                self.advance();
+            } else if !self.check(&TokenType::右花括号) {
+                return Err(ParserError::unexpected_token(
+                    "',' 或 '}'",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        }
+        
+        // 期望 '}'
+        self.expect(&TokenType::右花括号)?;
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(StructDefinition {
+            name,
+            fields,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析枚举定义
+     * 枚举 颜色 { 红, 绿, 蓝 }
+     */
+    fn parse_enum(&mut self) -> Result<EnumDefinition, ParserError> {
+        // 消耗 '枚举' 关键字
+        self.expect(&TokenType::Keyword(Keyword::枚举))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 枚举名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "枚举名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 期望 '{'
+        self.expect(&TokenType::左花括号)?;
+        
+        // 解析变体列表
+        let mut variants = Vec::new();
+        while !self.check(&TokenType::右花括号) {
+            let variant_name = match self.current() {
+                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                    literal.clone()
+                }
+                _ => {
+                    return Err(ParserError::unexpected_token(
+                        "枚举变体名",
+                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                    ));
+                }
+            };
+            self.advance();
+            
+            variants.push(EnumVariant {
+                name: variant_name,
+                fields: Vec::new(), // 简化:暂不支持带数据的变体
+            });
+            
+            // 检查 ',' 或 '}'
+            if self.check(&TokenType::逗号) {
+                self.advance();
+            } else if !self.check(&TokenType::右花括号) {
+                return Err(ParserError::unexpected_token(
+                    "',' 或 '}'",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        }
+        
+        // 期望 '}'
+        self.expect(&TokenType::右花括号)?;
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(EnumDefinition {
+            name,
+            variants,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析类型别名
+     * 类型 整数别名 = 整数
+     */
+    fn parse_type_alias(&mut self) -> Result<TypeAlias, ParserError> {
+        // 消耗 '类型' 关键字
+        self.expect(&TokenType::Keyword(Keyword::类型别名))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 别名名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "类型别名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 期望 '='
+        self.expect(&TokenType::赋值)?;
+        
+        // 解析类型
+        let aliased_type = self.parse_type()?;
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(TypeAlias {
+            name,
+            aliased_type,
+            span: start_span.merge(end_span),
+        })
     }
 
     /**

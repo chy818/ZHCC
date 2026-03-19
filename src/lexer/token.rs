@@ -80,6 +80,12 @@ pub enum Keyword {
     捕获,         // catch
     抛出,         // throw / raise
     最终,         // finally
+
+    // ========== 复合数据类型 (Composite Types) ==========
+    结构体,       // struct
+    枚举,         // enum
+    联合,         // union
+    类型别名,     // type (别名)
 }
 
 /**
@@ -316,6 +322,12 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("捕获", Keyword::捕获);
     map.insert("抛出", Keyword::抛出);
     map.insert("最终", Keyword::最终);
+
+    // ========== 复合数据类型 ==========
+    map.insert("结构体", Keyword::结构体);
+    map.insert("枚举", Keyword::枚举);
+    map.insert("联合", Keyword::联合);
+    map.insert("类型", Keyword::类型别名);
 
     // ========== 布尔字面量 (特殊: 是字面量但用中文表示) ==========
     // 真/假 在词法阶段作为标识符处理，解析阶段识别为布尔字面量

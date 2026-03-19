@@ -323,6 +323,24 @@ pub enum Stmt {
      * 块语句
      */
     Block(BlockStmt),
+    
+    /**
+     * 结构体定义语句
+     * 例如: 结构体 用户 { 姓名: 文本, 年龄: 整数 }
+     */
+    StructDef(StructDefinition),
+    
+    /**
+     * 枚举定义语句
+     * 例如: 枚举 颜色 { 红, 绿, 蓝 }
+     */
+    EnumDef(EnumDefinition),
+    
+    /**
+     * 类型别名语句
+     * 例如: 类型 整数别名 = 整数
+     */
+    TypeAlias(TypeAlias),
 }
 
 impl ASTNode for Stmt {
@@ -337,6 +355,9 @@ impl ASTNode for Stmt {
             Stmt::Break(e) => e.span(),
             Stmt::Continue(e) => e.span(),
             Stmt::Block(e) => e.span(),
+            Stmt::StructDef(e) => e.span.clone(),
+            Stmt::EnumDef(e) => e.span.clone(),
+            Stmt::TypeAlias(e) => e.span.clone(),
         }
     }
 }
@@ -602,6 +623,56 @@ pub enum Type {
     Array(Box<Type>),
     /// 自定义类型
     Custom(String),
+    /// 结构体类型 (命名)
+    Struct(String),
+}
+
+/**
+ * 结构体字段定义
+ */
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub field_type: Type,
+}
+
+/**
+ * 结构体类型定义
+ */
+#[derive(Debug, Clone)]
+pub struct StructDefinition {
+    pub name: String,
+    pub fields: Vec<StructField>,
+    pub span: Span,
+}
+
+/**
+ * 枚举变体定义
+ */
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+/**
+ * 枚举类型定义
+ */
+#[derive(Debug, Clone)]
+pub struct EnumDefinition {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+    pub span: Span,
+}
+
+/**
+ * 类型别名定义
+ */
+#[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub name: String,
+    pub aliased_type: Type,
+    pub span: Span,
 }
 
 /**
@@ -639,17 +710,38 @@ impl ASTNode for Function {
 }
 
 /**
+ * 导入声明
+ */
+#[derive(Debug, Clone)]
+pub struct ImportStmt {
+    pub module_path: String,
+    pub imported_items: Vec<String>,
+    pub span: Span,
+}
+
+/**
  * 模块 (顶层程序单元)
  */
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub imports: Vec<ImportStmt>,
     pub functions: Vec<Function>,
+    pub structs: Vec<StructDefinition>,
+    pub enums: Vec<EnumDefinition>,
+    pub type_aliases: Vec<TypeAlias>,
     pub span: Span,
 }
 
 impl Module {
     pub fn new(functions: Vec<Function>, span: Span) -> Self {
-        Self { functions, span }
+        Self { 
+            imports: Vec::new(),
+            functions, 
+            structs: Vec::new(),
+            enums: Vec::new(),
+            type_aliases: Vec::new(),
+            span 
+        }
     }
 }
 
