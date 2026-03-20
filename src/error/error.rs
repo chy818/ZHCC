@@ -110,6 +110,13 @@ impl CodegenError {
             message: format!("不支持的功能: {}", feature),
         }
     }
+    
+    pub fn new(message: &str) -> Self {
+        Self {
+            code: "CCAS-C002".to_string(),
+            message: message.to_string(),
+        }
+    }
 }
 
 /**

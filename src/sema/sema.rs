@@ -394,8 +394,8 @@ impl SemanticAnalyzer {
         self.define_symbol("列表长度".to_string(), Type::Int, false, Span::dummy());
         
         // 文件 I/O 函数
-        self.define_symbol("文件读取".to_string(), Type::String, false, Span::dummy());
-        self.define_symbol("文件写入".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("读取".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("写入".to_string(), Type::Int, false, Span::dummy());
         
         // 字符串函数
         self.define_symbol("文本长度".to_string(), Type::String, false, Span::dummy());

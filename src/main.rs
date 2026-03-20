@@ -6,10 +6,20 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, exit};
 
 fn main() {
+    // 设置标准输出为 UTF-8
+    // Windows 上默认控制台编码可能是 GBK/CP936
+    #[cfg(target_os = "windows")]
+    {
+        // 尝试设置 UTF-8 模式
+        use std::io;
+        let _ = io::stdout().write(&[]);  // 确保 stdout 初始化
+    }
+    
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -135,9 +145,9 @@ fn compile_file(filename: &str, mode: RunMode) -> Result<(), String> {
             println!("\n编译成功!");
         }
         RunMode::Build | RunMode::Run => {
-            // 保存 IR 到临时文件
-            let temp_ir = "temp_output.ll";
-            fs::write(temp_ir, &ir)
+            // 保存 IR 到临时文件 - 使用唯一名称
+            let temp_ir = format!("xuanyu_ir_{}.ll", std::process::id());
+            fs::write(&temp_ir, &ir)
                 .map_err(|e| format!("无法写入临时 IR 文件: {}", e))?;
 
             println!("\n--- LLVM IR ---");
@@ -148,7 +158,7 @@ fn compile_file(filename: &str, mode: RunMode) -> Result<(), String> {
             let temp_obj = "temp_output.o";
             
             let llc_result = Command::new("llc")
-                .arg(temp_ir)
+                .arg(&temp_ir)
                 .arg("-filetype=obj")
                 .arg("-o")
                 .arg(temp_obj)
@@ -216,12 +226,12 @@ fn compile_file(filename: &str, mode: RunMode) -> Result<(), String> {
                 Ok(output) => {
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup(temp_ir, temp_obj);
+                        cleanup(&temp_ir, temp_obj);
                         return Err(format!("链接失败: {}", stderr));
                     }
                 }
                 Err(e) => {
-                    let _ = fs::remove_file(temp_ir);
+                    let _ = fs::remove_file(&temp_ir);
                     let _ = fs::remove_file(temp_obj);
                     return Err(format!("无法执行 clang: {}\n请确保已安装 Clang/LLVM 并配置环境变量。", e));
                 }
@@ -230,14 +240,19 @@ fn compile_file(filename: &str, mode: RunMode) -> Result<(), String> {
             println!("链接成功: {}", output_exe);
 
             // 清理临时文件
-            cleanup(temp_ir, temp_obj);
+            cleanup(&temp_ir, temp_obj);
 
             println!("\n编译成功!");
 
             // 如果是运行模式，执行程序
             if mode == RunMode::Run {
                 println!("\n--- 运行结果 ---");
-                let run_result = Command::new(output_exe)
+                
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let exe_path = cwd.join(output_exe);
+                
+                let run_result = Command::new(&exe_path)
+                    .current_dir(&cwd)
                     .output();
 
                 match run_result {

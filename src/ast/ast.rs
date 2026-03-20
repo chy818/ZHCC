@@ -231,12 +231,18 @@ impl ASTNode for UnaryExpr {
 pub struct CallExpr {
     pub function: Box<Expr>,
     pub arguments: Vec<Expr>,
+    pub return_type: Option<Type>,  // 函数返回类型
     pub span: Span,
 }
 
 impl CallExpr {
     pub fn new(function: Box<Expr>, arguments: Vec<Expr>, span: Span) -> Self {
-        Self { function, arguments, span }
+        Self { 
+            function, 
+            arguments, 
+            return_type: None,
+            span 
+        }
     }
 }
 
@@ -617,6 +623,8 @@ pub enum Type {
     Char,
     /// 无返回
     Void,
+    /// 指针 (用于FFI和列表)
+    Pointer,
     /// 或许类型
     Optional(Box<Type>),
     /// 数组

@@ -602,6 +602,10 @@ impl Parser {
                 self.position += 1;
                 Type::Void
             }
+            Some(Token { token_type: TokenType::Keyword(Keyword::指针), .. }) => {
+                self.position += 1;
+                Type::Pointer
+            }
             Some(Token { token_type: TokenType::Keyword(Keyword::或许), .. }) => {
                 self.position += 1;
                 // 解析泛型参数

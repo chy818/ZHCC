@@ -44,14 +44,16 @@ pub enum Keyword {
     启动,         // spawn (启动线程/协程)
 
     // ========== 数据类型 (Types) - 对应规范 4.1 ==========
-    整数,         // int32
+    整数,         // int64
     长整数,       // int64
-    浮点数,       // float32
+    浮点数,       // float64
     双精度,       // float64
     布尔,         // bool
     文本,         // String / char*
     字符,         // char
     无返回,       // void
+    指针,         // pointer / void*
+    列表,         // list (动态数组)
     或许,         // Option / T?
 
     // ========== 内存安全与所有权 (Memory & Safety) ==========
@@ -294,6 +296,8 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("文本", Keyword::文本);
     map.insert("字符", Keyword::字符);
     map.insert("无返回", Keyword::无返回);
+    map.insert("指针", Keyword::指针);
+    map.insert("列表", Keyword::列表);
     map.insert("或许", Keyword::或许);
 
     // ========== 内存安全与所有权 ==========
