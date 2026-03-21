@@ -63,6 +63,10 @@ pub struct CodeGenerator {
     variable_types: std::collections::HashMap<String, String>,
     /// 字符串常量表
     string_constants: std::collections::HashMap<String, (String, usize)>,
+    /// 已处理的模块路径（防止重复处理）
+    processed_modules: std::collections::HashSet<String>,
+    /// 已生成的函数名（防止重复生成）
+    generated_functions: std::collections::HashSet<String>,
 }
 
 impl CodeGenerator {
@@ -74,6 +78,8 @@ impl CodeGenerator {
             variables: std::collections::HashMap::new(),
             variable_types: std::collections::HashMap::new(),
             string_constants: std::collections::HashMap::new(),
+            processed_modules: std::collections::HashSet::new(),
+            generated_functions: std::collections::HashSet::new(),
         }
     }
 
@@ -159,13 +165,11 @@ impl CodeGenerator {
             "列表追加" => Some("rt_list_append"),
             "列表获取" => Some("rt_list_get"),
             "列表长度" => Some("rt_list_len"),
-            "读取行" => Some("rt_readline"),
             "文本长度" => Some("rt_string_len"),
             // 兼容旧名称 - 映射到新的运行时函数
             "创建列表" => Some("rt_list_new"),
             "列表添加" => Some("rt_list_append"),
-            "读取" => Some("读取"),         // 运行时库中的函数名
-            "写入" => Some("write"),
+            "读取行" => Some("rt_readline"),
             "文本转整数" => Some("str_to_int"),
             "整数转文本" => Some("int_to_str"),
             "文本拼接" => Some("str_concat"),
@@ -173,6 +177,9 @@ impl CodeGenerator {
             "文本包含" => Some("str_contains"),
             "参数个数" => Some("argc"),
             "获取参数" => Some("argv"),
+            // 控制台输入函数
+            "输入整数" => Some("输入整数"),
+            "输入文本" => Some("输入文本"),
             // 文件 I/O 函数
             "文件读取" => Some("文件读取"),
             "文件写入" => Some("文件写入"),
@@ -303,18 +310,125 @@ impl CodeGenerator {
     }
 
     /**
+     * 加载并解析导入模块
+     * 递归处理模块导入，收集所有函数定义
+     */
+    fn load_imported_module(&self, module_path: &str, processed_modules: &mut std::collections::HashSet<String>) -> Result<Module, CodegenError> {
+        // 去除引号
+        let path = module_path.trim_matches('"');
+        
+        // 检查是否已处理过该模块
+        if processed_modules.contains(path) {
+            return Ok(Module {
+                imports: vec![],
+                functions: vec![],
+                structs: vec![],
+                enums: vec![],
+                type_aliases: vec![],
+                constants: vec![],
+                extern_functions: vec![],
+                span: crate::lexer::token::Span::dummy(),
+            });
+        }
+        
+        // 标记为已处理
+        processed_modules.insert(path.to_string());
+        
+        // 读取模块文件
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| CodegenError {
+                code: "C001".to_string(),
+                message: format!("无法加载模块 '{}': {}", path, e),
+            })?;
+        
+        // 词法分析
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize()
+            .map_err(|e| CodegenError {
+                code: "C002".to_string(),
+                message: format!("词法分析错误: {}", e.message),
+            })?;
+        
+        // 语法分析
+        let ast = crate::parser::parse(tokens)
+            .map_err(|e| CodegenError {
+                code: "C003".to_string(),
+                message: format!("语法分析错误: {}", e.message),
+            })?;
+        
+        Ok(ast)
+    }
+
+    /**
+     * 递归收集模块及其导入的所有函数
+     * 注意：使用 collected_names 在整个递归过程中去重
+     */
+    fn collect_all_functions(&self, module: &Module, collected_names: &mut std::collections::HashSet<String>, processed_modules: &mut std::collections::HashSet<String>) -> Result<Vec<Function>, CodegenError> {
+        let mut all_functions = Vec::new();
+        
+        // 先处理导入模块
+        for import in &module.imports {
+            // 输出调试信息
+            eprintln!("正在加载导入模块: {}", import.module_path);
+            
+            let imported_module = self.load_imported_module(&import.module_path, processed_modules)?;
+            eprintln!("  - 导入模块函数数量: {}", imported_module.functions.len());
+            
+            // 递归收集导入模块的函数
+            let imported_functions = self.collect_all_functions(&imported_module, collected_names, processed_modules)?;
+            eprintln!("  - 递归收集到 {} 个函数", imported_functions.len());
+            
+            // 直接添加递归返回的函数（递归调用已经去重并添加到 collected_names 了）
+            all_functions.extend(imported_functions);
+        }
+        
+        // 添加当前模块的函数（去重）
+        for func in &module.functions {
+            if !collected_names.contains(&func.name) {
+                eprintln!("添加当前模块函数: {}", func.name);
+                collected_names.insert(func.name.clone());
+                all_functions.push(func.clone());
+            } else {
+                eprintln!("跳过当前模块重复函数: {}", func.name);
+            }
+        }
+        
+        eprintln!("collect_all_functions 返回 {} 个函数", all_functions.len());
+        Ok(all_functions)
+    }
+
+    /**
      * 生成模块
      */
     pub fn generate(&mut self, module: &Module) -> Result<String, CodegenError> {
         // 清空字符串常量表，为新文件做准备
         self.string_constants.clear();
         
+        // 收集所有函数（包括导入模块的函数）
+        let mut collected_names = std::collections::HashSet::new();
+        let mut processed_modules = std::collections::HashSet::new();
+        let all_functions = self.collect_all_functions(module, &mut collected_names, &mut processed_modules)?;
+        
         // 查找主函数并记录其返回类型
+        // 优先查找 "主" 函数，如果没有则查找 "main" 函数
         let mut main_func_return_type: Option<Type> = None;
-        for func in &module.functions {
+        let mut has_main_func = false;  // 用户是否定义了 main 函数
+        
+        for func in &all_functions {
             if func.name == "主" {
                 main_func_return_type = Some(func.return_type.clone());
                 break;
+            }
+        }
+        
+        // 如果没有 "主" 函数，检查是否有 "main" 函数
+        if main_func_return_type.is_none() {
+            for func in &all_functions {
+                if func.name == "main" {
+                    main_func_return_type = Some(func.return_type.clone());
+                    has_main_func = true;
+                    break;
+                }
             }
         }
         
@@ -335,8 +449,9 @@ impl CodeGenerator {
         // 文本操作
         self.emit("declare i64 @rt_string_len(i8*)");
         
-        // 读取行
-        self.emit("declare i8* @rt_readline()");
+        // 控制台输入函数
+        self.emit("declare i64 @\"输入整数\"()");
+        self.emit("declare i8* @\"输入文本\"()");
         
         // 打印整数/浮点/布尔函数 (ASCII 函数名)
         self.emit("declare void @print_int(i64)");
@@ -353,11 +468,7 @@ impl CodeGenerator {
         self.emit("declare i64 @list_get(i8*, i64)");
         self.emit("declare i64 @list_len(i8*)");
         
-        // 文件 I/O 函数
-        self.emit("declare i8* @read(i8*)");
-        self.emit("declare i32 @write(i8*, i8*)");
-        
-        // 新增文件 I/O 函数 (中文函数名)
+        // 文件 I/O 函数 (中文函数名)
         self.emit("declare i8* @\"文件读取\"(i8*)");
         self.emit("declare i32 @\"文件写入\"(i8*, i8*)");
         self.emit("declare i32 @\"文件存在\"(i8*)");
@@ -380,17 +491,23 @@ impl CodeGenerator {
         self.emit("; ==================== 用户函数 ====================");
         self.emit("");
 
-        // 生成每个函数的 IR（这会填充 string_constants）
-        for func in &module.functions {
+        // 生成每个函数的 IR（包括导入模块的函数）
+        eprintln!("准备生成 {} 个函数的 IR", all_functions.len());
+        for (i, func) in all_functions.iter().enumerate() {
+            eprintln!("生成函数 {}/{}: {}", i+1, all_functions.len(), func.name);
             self.generate_function(func)?;
         }
 
-        // 生成入口点包装函数
+        // 生成入口点包装函数（仅当用户定义了 "主" 函数时）
+        // 如果用户定义了 "main" 函数，则不需要生成包装函数
         if let Some(ret_type) = main_func_return_type {
-            self.emit("");
-            self.emit("; ==================== 入口点包装 ====================");
-            self.emit("");
-            self.generate_main_wrapper(&ret_type);
+            if !has_main_func {
+                // 用户定义了 "主" 函数，需要生成 main 包装
+                self.emit("");
+                self.emit("; ==================== 入口点包装 ====================");
+                self.emit("");
+                self.generate_main_wrapper(&ret_type);
+            }
         }
 
         // 生成外部函数声明 (FFI)
@@ -1144,10 +1261,10 @@ impl CodeGenerator {
         let is_list_len = func_name == "列表长度" || func_name == "list_len";
         let is_list_func = is_list_create || is_list_add || is_list_get || is_list_len;
         
-        // 检查是否是文件函数
-        let is_file_read = func_name == "读取" || func_name == "read";
-        let is_file_write = func_name == "写入" || func_name == "write";
-        let is_file_func = is_file_read || is_file_write;
+        // 检查是否是控制台输入函数
+        let is_input_int = func_name == "输入整数";
+        let is_input_text = func_name == "输入文本";
+        let is_input_func = is_input_int || is_input_text;
         
         // 检查是否是字符串函数
         let is_str_len = func_name == "文本长度" || func_name == "str_len";
@@ -1174,12 +1291,15 @@ impl CodeGenerator {
             "列表添加" => "list_add".to_string(),
             "列表获取" => "list_get".to_string(),
             "列表长度" => "list_len".to_string(),
-            "读取" => "read".to_string(),
-            "写入" => "write".to_string(),
+            // 控制台输入函数
+            "输入整数" => "\"输入整数\"".to_string(),
+            "输入文本" => "\"输入文本\"".to_string(),
+            // 文本函数
             "文本长度" => "str_len".to_string(),
             "文本拼接" => "str_concat".to_string(),
             "文本切片" => "str_slice".to_string(),
             "文本包含" => "str_contains".to_string(),
+            // 命令行参数函数
             "参数个数" => "argc".to_string(),
             "获取参数" => "argv".to_string(),
             // 词法分析器用户函数
@@ -1203,7 +1323,8 @@ impl CodeGenerator {
         let is_builtin = matches!(func_name.as_str(), 
             "打印" | "打印整数" | "打印浮点" | "打印布尔" |
             "文本转整数" | "整数转文本" | "创建列表" | "列表添加" | "列表获取" | "列表长度" |
-            "读取" | "写入" | "文本长度" | "文本拼接" | "文本切片" | "文本包含" |
+            "输入整数" | "输入文本" |
+            "文本长度" | "文本拼接" | "文本切片" | "文本包含" |
             "参数个数" | "获取参数" |
             "文件读取" | "文件写入" | "文件存在" | "文件删除" |
             "执行命令" | "命令输出" |
@@ -1212,11 +1333,11 @@ impl CodeGenerator {
         );
         
         // 检查是否是文件 I/O 函数
-        let is_file_read_new = func_name == "文件读取";
-        let is_file_write_new = func_name == "文件写入";
+        let is_file_read = func_name == "文件读取";
+        let is_file_write = func_name == "文件写入";
         let is_file_exists = func_name == "文件存在";
         let is_file_delete = func_name == "文件删除";
-        let is_file_new_func = is_file_read_new || is_file_write_new || is_file_exists || is_file_delete;
+        let is_file_func = is_file_read || is_file_write || is_file_exists || is_file_delete;
         
         // 检查是否是系统命令函数
         let is_exec_cmd = func_name == "执行命令";
@@ -1270,8 +1391,8 @@ impl CodeGenerator {
                         args.push(format!("i8* %{}", arg_val));
                     }
                 }
-            } else if is_builtin_to_int || is_file_func || is_str_func || is_file_new_func {
-                // 文本转整数、文件函数、字符串函数、新文件函数接受 i8* 字符串指针
+            } else if is_builtin_to_int || is_file_func || is_str_func {
+                // 文本转整数、文件函数、字符串函数接受 i8* 字符串指针
                 args.push(format!("i8* %{}", arg_val));
             } else if is_builtin_to_str {
                 // 整数转文本接受 i64
@@ -1308,18 +1429,18 @@ impl CodeGenerator {
         let (ret_type, is_void_call) = if is_builtin_print {
             // 打印函数返回 void
             ("void".to_string(), true)
-        } else if is_builtin_to_str || is_list_create || is_file_read || is_str_func || is_arg_get || is_file_read_new || is_cmd_output {
-            // 整数转文本、创建列表、文件读取、字符串函数、获取参数、文件读取、命令输出返回 i8*
+        } else if is_builtin_to_str || is_list_create || is_str_func || is_arg_get || is_file_read || is_cmd_output || is_input_text {
+            // 整数转文本、创建列表、字符串函数、获取参数、文件读取、命令输出、输入文本返回 i8*
             ("i8*".to_string(), false)
-        } else if is_file_write || is_arg_count || is_file_write_new || is_file_exists || is_file_delete || is_exec_cmd {
-            // 文件写入、参数个数、文件写入、文件存在、文件删除、执行命令返回 i32
-            ("i32".to_string(), false)
+        } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int {
+            // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数返回 i64/i32
+            ("i64".to_string(), false)
         } else if !is_builtin {
             // 用户函数（非内置函数）返回 i64（假设）
             ("i64".to_string(), false)
         } else {
-            // 其他内置函数返回 i32
-            ("i32".to_string(), false)
+            // 其他内置函数返回 i64
+            ("i64".to_string(), false)
         };
         
         // 生成函数调用
@@ -1333,12 +1454,12 @@ impl CodeGenerator {
         } else {
             let args_str = args.join(", ");
             
-            if is_builtin_to_str || is_list_create || is_file_read || is_str_func || is_arg_get || is_file_read_new || is_cmd_output {
-                // 整数转文本、创建列表、文件读取、字符串函数、获取参数、文件读取、命令输出返回 i8*
+            if is_builtin_to_str || is_list_create || is_str_func || is_arg_get || is_file_read || is_cmd_output || is_input_text {
+                // 整数转文本、创建列表、字符串函数、获取参数、文件读取、命令输出、输入文本返回 i8*
                 self.emit(&format!("%{} = call i8* @{}({})", result, final_func_name, args_str));
-            } else if is_file_write || is_arg_count || is_file_write_new || is_file_exists || is_file_delete || is_exec_cmd {
-                // 文件写入、参数个数、文件写入、文件存在、文件删除、执行命令返回 i32
-                self.emit(&format!("%{} = call i32 @{}({})", result, final_func_name, args_str));
+            } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int {
+                // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数返回 i64
+                self.emit(&format!("%{} = call i64 @{}({})", result, final_func_name, args_str));
             } else if is_builtin_print {
                 // 打印函数返回 void
                 self.emit(&format!("call void @{}({})", final_func_name, args_str));
@@ -1348,8 +1469,8 @@ impl CodeGenerator {
                 // 用户函数（非内置函数）
                 self.emit(&format!("%{} = call i64 @{}({})", result, final_func_name, args_str));
             } else {
-                // 其他内置函数返回 i32
-                self.emit(&format!("%{} = call i32 @{}({})", result, final_func_name, args_str));
+                // 其他内置函数返回 i64
+                self.emit(&format!("%{} = call i64 @{}({})", result, final_func_name, args_str));
             }
         }
 

@@ -463,12 +463,12 @@ impl SemanticAnalyzer {
         self.define_symbol("列表获取".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("列表长度".to_string(), Type::Int, false, Span::dummy());
         
-        // 文件 I/O 函数
-        self.define_symbol("读取".to_string(), Type::String, false, Span::dummy());
-        self.define_symbol("写入".to_string(), Type::Int, false, Span::dummy());
+        // 控制台输入函数
+        self.define_symbol("输入整数".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("输入文本".to_string(), Type::String, false, Span::dummy());
         
         // 字符串函数
-        self.define_symbol("文本长度".to_string(), Type::String, false, Span::dummy());
+        self.define_symbol("文本长度".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("文本拼接".to_string(), Type::String, false, Span::dummy());
         self.define_symbol("文本切片".to_string(), Type::String, false, Span::dummy());
         self.define_symbol("文本包含".to_string(), Type::String, false, Span::dummy());
@@ -477,13 +477,13 @@ impl SemanticAnalyzer {
         self.define_symbol("参数个数".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("获取参数".to_string(), Type::String, false, Span::dummy());
         
-        // 新增文件 I/O 函数
+        // 文件 I/O 函数
         self.define_symbol("文件读取".to_string(), Type::String, false, Span::dummy());
         self.define_symbol("文件写入".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("文件存在".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("文件删除".to_string(), Type::Int, false, Span::dummy());
         
-        // 新增系统命令函数
+        // 系统命令函数
         self.define_symbol("执行命令".to_string(), Type::Int, false, Span::dummy());
         self.define_symbol("命令输出".to_string(), Type::String, false, Span::dummy());
         

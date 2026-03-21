@@ -1,0 +1,12 @@
+/**
+ * @file math_utils.xy
+ * @brief 数学工具函数模块
+ */
+
+函数 add(a: 整数, b: 整数): 整数 {
+    返回 a + b
+}
+
+函数 multiply(a: 整数, b: 整数): 整数 {
+    返回 a * b
+}

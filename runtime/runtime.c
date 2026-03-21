@@ -332,15 +332,23 @@ int 打印换行() {
 }
 
 /**
- * 读取整数 (兼容旧版本)
- * @return 读取到的整数
+ * 输入整数 - 从控制台读取一个整数
+ * @return 读取到的整数，失败返回 0
  */
-int64_t 读取() {
+int64_t 输入整数() {
     int64_t val;
     if (scanf("%lld", &val) == 1) {
         return val;
     }
     return 0;
+}
+
+/**
+ * 输入文本 - 从控制台读取一行文本
+ * @return 读取到的文本行，EOF 或错误返回空串
+ */
+void* 输入文本() {
+    return rt_readline();
 }
 
 /**
