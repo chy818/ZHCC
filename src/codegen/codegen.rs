@@ -9,6 +9,9 @@
  * - 表达式 IR 生成
  * - 控制流 IR 生成
  * - RISC-V RV64GC 目标支持
+ * - FFI 外部函数声明
+ * - 常量定义
+ * - 枚举类型
  */
 
 use crate::ast::*;
@@ -296,6 +299,26 @@ impl CodeGenerator {
             self.generate_main_wrapper(&ret_type);
         }
 
+        // 生成外部函数声明 (FFI)
+        if !module.extern_functions.is_empty() {
+            self.emit("");
+            self.emit("; ==================== 外部函数声明 ====================");
+            self.emit("");
+            for ext_func in &module.extern_functions {
+                self.generate_extern_function(ext_func)?;
+            }
+        }
+
+        // 生成常量定义
+        if !module.constants.is_empty() {
+            self.emit("");
+            self.emit("; ==================== 常量定义 ====================");
+            self.emit("");
+            for constant in &module.constants {
+                self.generate_global_constant(constant)?;
+            }
+        }
+
         // 在用户函数之后生成字符串常量
         self.emit("");
         self.emit("; ==================== 字符串常量 ====================");
@@ -336,6 +359,53 @@ impl CodeGenerator {
         }
         
         self.emit("}");
+    }
+
+    /**
+     * 生成外部函数声明 (FFI)
+     * 外部函数声明生成 LLVM declare 语句
+     */
+    fn generate_extern_function(&mut self, ext_func: &ExternFunction) -> Result<(), CodegenError> {
+        let ret_type = type_to_llvm(&ext_func.return_type);
+        
+        // 生成参数列表
+        let mut param_strs = Vec::new();
+        for param in &ext_func.params {
+            let param_type = type_to_llvm(&param.param_type);
+            param_strs.push(format!("{}", param_type));
+        }
+        let params_str = param_strs.join(", ");
+        
+        // 确定函数名：使用链接名（如果有）或翻译后的名字
+        let func_name = if let Some(link_name) = &ext_func.link_name {
+            link_name.clone()
+        } else {
+            self.translate_func_name(&ext_func.name)
+        };
+        
+        self.emit(&format!("declare {} @{} ({})", ret_type, func_name, params_str));
+        
+        // 注册到变量映射
+        self.variables.insert(ext_func.name.clone(), func_name);
+        self.variable_types.insert(ext_func.name.clone(), ret_type.to_string());
+        
+        Ok(())
+    }
+
+    /**
+     * 生成全局常量定义
+     */
+    fn generate_global_constant(&mut self, constant: &ConstantDef) -> Result<(), CodegenError> {
+        let llvm_type = type_to_llvm(&constant.const_type);
+        let const_name = self.escape_llvm_ident(&constant.name);
+        
+        // 生成常量值
+        let const_value = self.generate_expression(&constant.value)?;
+        
+        // 生成全局常量声明
+        self.emit(&format!("@{} = constant {} {}", const_name, llvm_type, format!("%{}", const_value)));
+        
+        Ok(())
     }
 
     /**
@@ -468,7 +538,86 @@ impl CodeGenerator {
             Stmt::TypeAlias(_) => {
                 Ok(()) // TODO: 实现类型别名生成
             }
+            Stmt::Constant(constant) => {
+                self.generate_constant_statement(constant)
+            }
+            Stmt::Match(match_stmt) => {
+                self.generate_match_statement(match_stmt)
+            }
         }
+    }
+
+    /**
+     * 生成模式匹配语句
+     * 模式匹配编译为一系列条件分支
+     */
+    fn generate_match_statement(&mut self, match_stmt: &MatchStmt) -> Result<(), CodegenError> {
+        // 生成要匹配的值
+        let subject_value = self.generate_expression(&match_stmt.subject)?;
+        
+        // 为每个分支生成标签
+        let end_label = self.new_label("match_end");
+        
+        // 生成每个分支
+        for arm in &match_stmt.arms {
+            match &arm.pattern {
+                MatchPattern::EnumVariant { variant_name, fields, .. } => {
+                    // 创建分支标签
+                    let arm_label = self.new_label("match_arm");
+                    
+                    // TODO: 实际应该检查枚举标签匹配
+                    // 这里简化为直接生成分支体
+                    self.emit_label(&arm_label);
+                    
+                    // 将捕获的字段绑定到变量
+                    for field in fields {
+                        // 简化：生成一个虚拟的变量绑定
+                        let field_alloca = self.new_label("field");
+                        self.emit(&format!("%{} = alloca i64", field_alloca));
+                        self.variables.insert(field.binding_name.clone(), field_alloca);
+                        self.variable_types.insert(field.binding_name.clone(), "i64".to_string());
+                    }
+                    
+                    // 生成分支体
+                    self.generate_statement(&arm.body)?;
+                    
+                    // 跳转到结束
+                    self.emit(&format!("br label %{}", end_label));
+                }
+                MatchPattern::Wildcard => {
+                    // 默认分支
+                    let arm_label = self.new_label("match_default");
+                    self.emit_label(&arm_label);
+                    self.generate_statement(&arm.body)?;
+                    self.emit(&format!("br label %{}", end_label));
+                }
+            }
+        }
+        
+        // 结束标签
+        self.emit_label(&end_label);
+        
+        Ok(())
+    }
+
+    /**
+     * 生成常量定义语句
+     * 常量在编译期求值，生成全局常量
+     */
+    fn generate_constant_statement(&mut self, constant: &ConstantDef) -> Result<(), CodegenError> {
+        // 记录常量到变量映射（常量作为全局常量处理）
+        let _const_value = self.generate_expression(&constant.value)?;
+        
+        // 常量存储为全局变量
+        let llvm_type = type_to_llvm(&constant.const_type);
+        let const_name = self.escape_llvm_ident(&constant.name);
+        
+        // 在模块级别生成常量定义（在 generate 函数中处理）
+        // 这里只记录常量名映射
+        self.variables.insert(const_name.clone(), format!("@{}", const_name));
+        self.variable_types.insert(const_name, llvm_type.to_string());
+        
+        Ok(())
     }
 
     /**

@@ -139,7 +139,7 @@ impl Parser {
 
     /**
      * 解析整个模块
-     * 模块 -> 导入列表? (函数|结构体|枚举|类型别名)*
+     * 模块 -> 导入列表? (函数|结构体|枚举|类型别名|常量|外部)*
      */
     pub fn parse_module(&mut self) -> Result<Module, ParserError> {
         let mut imports = Vec::new();
@@ -147,6 +147,8 @@ impl Parser {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut type_aliases = Vec::new();
+        let mut constants = Vec::new();
+        let mut extern_functions = Vec::new();
         let start_span = self.current()
             .map(|t| t.span)
             .unwrap_or(Span::dummy());
@@ -178,6 +180,16 @@ impl Parser {
                     Ok(t) => type_aliases.push(t),
                     Err(e) => return Err(e),
                 }
+            } else if self.check(&TokenType::Keyword(Keyword::常量)) {
+                match self.parse_constant() {
+                    Ok(c) => constants.push(c),
+                    Err(e) => return Err(e),
+                }
+            } else if self.check(&TokenType::Keyword(Keyword::外部)) {
+                match self.parse_extern_function() {
+                    Ok(e) => extern_functions.push(e),
+                    Err(e) => return Err(e),
+                }
             } else {
                 // 跳过无法识别的声明，继续解析
                 self.advance();
@@ -193,6 +205,8 @@ impl Parser {
         module.structs = structs;
         module.enums = enums;
         module.type_aliases = type_aliases;
+        module.constants = constants;
+        module.extern_functions = extern_functions;
         Ok(module)
     }
 
@@ -339,6 +353,7 @@ impl Parser {
     /**
      * 解析枚举定义
      * 枚举 颜色 { 红, 绿, 蓝 }
+     * 枚举 表达式 { 数字(整数), 加法(左: 节点, 右: 节点) }
      */
     fn parse_enum(&mut self) -> Result<EnumDefinition, ParserError> {
         // 消耗 '枚举' 关键字
@@ -381,9 +396,55 @@ impl Parser {
             };
             self.advance();
             
+            // 检查是否有字段列表: (类型1, 类型2) 或 (字段1: 类型1, 字段2: 类型2)
+            let mut fields = Vec::new();
+            if self.check(&TokenType::左圆括号) {
+                self.advance(); // 消耗 '('
+                
+                // 解析字段列表
+                while !self.check(&TokenType::右圆括号) {
+                    // 检查命名字段: 标识符 ':' 类型
+                    let field_name = if self.peek(1).map(|t| &t.token_type).unwrap_or(&TokenType::未知) == &TokenType::冒号 {
+                        // 命名字段: 字段名 : 类型
+                        let name = match self.current() {
+                            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                                Some(literal.clone())
+                            }
+                            _ => {
+                                return Err(ParserError::unexpected_token(
+                                    "字段名",
+                                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                                ));
+                            }
+                        };
+                        self.advance();
+                        self.expect(&TokenType::冒号)?; // 消耗 ':'
+                        name
+                    } else {
+                        None // 位置参数
+                    };
+                    
+                    // 解析字段类型
+                    let field_type = self.parse_type()?;
+                    
+                    fields.push(EnumVariantField {
+                        name: field_name,
+                        field_type,
+                    });
+                    
+                    // 跳过逗号
+                    if self.check(&TokenType::逗号) {
+                        self.advance();
+                    }
+                }
+                
+                self.expect(&TokenType::右圆括号)?; // 消耗 ')'
+            }
+            
             variants.push(EnumVariant {
                 name: variant_name,
-                fields: Vec::new(), // 简化:暂不支持带数据的变体
+                fields,
             });
             
             // 检查 ',' 或 '}'
@@ -405,6 +466,124 @@ impl Parser {
         Ok(EnumDefinition {
             name,
             variants,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析常量定义
+     * 常量 最高分 = 100
+     * 常量 消息 = "你好"
+     */
+    fn parse_constant(&mut self) -> Result<ConstantDef, ParserError> {
+        // 消耗 '常量' 关键字
+        self.expect(&TokenType::Keyword(Keyword::常量))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 常量名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "常量名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 可选类型标注
+        let const_type = if self.match_token(&TokenType::冒号) {
+            self.parse_type()?
+        } else {
+            Type::Int // 默认类型
+        };
+        
+        // 期望 '='
+        self.expect(&TokenType::赋值)?;
+        
+        // 解析常量值
+        let value = self.parse_expression()?;
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(ConstantDef {
+            name,
+            const_type,
+            value,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析外部函数声明 (FFI)
+     * 外部 函数 malloc(大小: 整数) -> 指针 ["malloc"]
+     */
+    fn parse_extern_function(&mut self) -> Result<ExternFunction, ParserError> {
+        // 消耗 '外部' 关键字
+        self.expect(&TokenType::Keyword(Keyword::外部))?;
+        
+        let start_span = self.previous().unwrap().span.clone();
+        
+        // 期望 '函数' 关键字
+        self.expect(&TokenType::Keyword(Keyword::函数))?;
+        
+        // 函数名
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "函数名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+        
+        // 参数列表
+        let params = self.parse_parameter_list()?;
+        
+        // 可选返回类型
+        let return_type = if self.match_token(&TokenType::冒号) {
+            self.parse_type()?
+        } else {
+            Type::Void
+        };
+        
+        // 可选链接名: ["malloc"]
+        let link_name = if self.check(&TokenType::左方括号) {
+            self.advance();
+            let link = match self.current() {
+                Some(Token { token_type: TokenType::文本字面量, literal, .. }) => {
+                    literal.clone()
+                }
+                _ => {
+                    return Err(ParserError::unexpected_token(
+                        "链接名",
+                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                    ));
+                }
+            };
+            self.advance();
+            self.expect(&TokenType::右方括号)?;
+            Some(link)
+        } else {
+            None
+        };
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(ExternFunction {
+            name,
+            params,
+            return_type,
+            link_name,
             span: start_span.merge(end_span),
         })
     }
@@ -681,6 +860,9 @@ impl Parser {
             // 跳过循环: 跳过
             TokenType::Keyword(Keyword::跳过) => self.parse_continue_statement(),
             
+            // 模式匹配: 匹配 expr { ... }
+            TokenType::Keyword(Keyword::匹配) => self.parse_match_statement(),
+            
             // 块语句: { ... }
             TokenType::左花括号 => self.parse_block_statement(),
             
@@ -692,6 +874,167 @@ impl Parser {
                 Ok(Stmt::Expr(ExprStmt::new(expr, span)))
             }
         }
+    }
+
+    /**
+     * 解析模式匹配语句
+     * 匹配 值 {
+     *     情况 数字(n) => n,
+     *     情况 加法(a, b) => a + b,
+     *     默认 => 0
+     * }
+     */
+    fn parse_match_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+        
+        // 消耗 '匹配' 关键字
+        self.expect(&TokenType::Keyword(Keyword::匹配))?;
+        
+        // 解析要匹配的值
+        let subject = self.parse_expression()?;
+        
+        // 期望 '{'
+        self.expect(&TokenType::左花括号)?;
+        
+        // 解析匹配分支
+        let mut arms = Vec::new();
+        while !self.check(&TokenType::右花括号) {
+            // 检查 '情况' 或 '默认'
+            if self.check_keyword(&Keyword::情况) {
+                self.advance(); // 消耗 '情况'
+                
+                // 解析枚举变体模式: 变体名(字段1, 字段2)
+                let variant_name = match self.current() {
+                    Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                        literal.clone()
+                    }
+                    _ => {
+                        return Err(ParserError::unexpected_token(
+                            "枚举变体名",
+                            &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                            self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                        ));
+                    }
+                };
+                self.advance();
+                
+                // 检查是否有字段绑定: (x, y) 或 (左: a, 右: b)
+                let mut fields = Vec::new();
+                if self.check(&TokenType::左圆括号) {
+                    self.advance(); // 消耗 '('
+                    
+                    while !self.check(&TokenType::右圆括号) {
+                        // 检查命名字段: 标识符 ':' 标识符
+                        let field_binding = if self.peek(1).map(|t| &t.token_type).unwrap_or(&TokenType::未知) == &TokenType::冒号 {
+                            // 命名字段: 字段名 : 变量名
+                            let field_name = match self.current() {
+                                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                                    Some(literal.clone())
+                                }
+                                _ => None
+                            };
+                            self.advance();
+                            self.expect(&TokenType::冒号)?;
+                            // 变量名
+                            let binding_name = match self.current() {
+                                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                                    literal.clone()
+                                }
+                                _ => {
+                                    return Err(ParserError::unexpected_token(
+                                        "变量名",
+                                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                                    ));
+                                }
+                            };
+                            self.advance();
+                            MatchFieldBinding {
+                                name: field_name,
+                                binding_name,
+                            }
+                        } else {
+                            // 位置参数: 变量名
+                            let binding_name = match self.current() {
+                                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                                    literal.clone()
+                                }
+                                _ => {
+                                    return Err(ParserError::unexpected_token(
+                                        "变量名",
+                                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                                    ));
+                                }
+                            };
+                            self.advance();
+                            MatchFieldBinding {
+                                name: None,
+                                binding_name,
+                            }
+                        };
+                        
+                        // 跳过逗号
+                        if self.check(&TokenType::逗号) {
+                            self.advance();
+                        }
+                        
+                        fields.push(field_binding);
+                    }
+                    
+                    self.expect(&TokenType::右圆括号)?; // 消耗 ')'
+                }
+                
+                // 期望 '=>'
+                self.expect(&TokenType::大于)?;
+                self.expect(&TokenType::赋值)?;
+                
+                // 解析分支体
+                let body = Box::new(self.parse_statement()?);
+                
+                arms.push(MatchArm {
+                    pattern: MatchPattern::EnumVariant {
+                        enum_name: String::new(), // 简化：稍后填充
+                        variant_name,
+                        fields,
+                    },
+                    body,
+                });
+                
+            } else if self.check_keyword(&Keyword::默认) {
+                self.advance(); // 消耗 '默认'
+                
+                // 期望 '=>'
+                self.expect(&TokenType::大于)?;
+                self.expect(&TokenType::赋值)?;
+                
+                // 解析分支体
+                let body = Box::new(self.parse_statement()?);
+                
+                arms.push(MatchArm {
+                    pattern: MatchPattern::Wildcard,
+                    body,
+                });
+            } else {
+                return Err(ParserError::unexpected_token(
+                    "'情况' 或 '默认'",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        }
+        
+        // 期望 '}'
+        self.expect(&TokenType::右花括号)?;
+        
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(Stmt::Match(MatchStmt {
+            subject,
+            arms,
+            span: start_span.merge(end_span),
+        }))
     }
 
     /**

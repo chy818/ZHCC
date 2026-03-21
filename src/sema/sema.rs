@@ -370,7 +370,77 @@ impl SemanticAnalyzer {
                 // 注册类型别名
                 self.register_type_alias(type_alias)
             }
+            Stmt::Constant(constant) => {
+                // 分析常量定义
+                self.analyze_constant_statement(constant)
+            }
+            Stmt::Match(match_stmt) => {
+                // 分析模式匹配
+                self.analyze_match_statement(match_stmt)
+            }
         }
+    }
+
+    /**
+     * 分析模式匹配语句
+     */
+    fn analyze_match_statement(&mut self, match_stmt: &MatchStmt) -> Result<Type, Vec<TypeError>> {
+        // 分析要匹配的值
+        let _subject_type = self.analyze_expression(&match_stmt.subject)?;
+        
+        // 分析每个分支
+        for arm in &match_stmt.arms {
+            // 在分支内创建新的作用域（用于变量绑定）
+            self.enter_scope();
+            
+            // 处理字段绑定
+            if let MatchPattern::EnumVariant { fields, .. } = &arm.pattern {
+                for field in fields {
+                    // 将捕获的字段作为变量添加到作用域
+                    self.define_symbol(
+                        field.binding_name.clone(),
+                        Type::Int, // 简化：假设为整数类型
+                        false,
+                        match_stmt.span,
+                    );
+                }
+            }
+            
+            // 分析分支体
+            self.analyze_statement(&arm.body)?;
+            
+            self.exit_scope();
+        }
+        
+        Ok(Type::Void)
+    }
+
+    /**
+     * 分析常量定义语句
+     */
+    fn analyze_constant_statement(&mut self, constant: &ConstantDef) -> Result<Type, Vec<TypeError>> {
+        // 分析常量值表达式
+        let value_type = self.analyze_expression(&constant.value)?;
+        
+        // 检查类型标注
+        if let Some(type_annotation) = &Some(constant.const_type.clone()) {
+            if !value_type.can_cast_to(type_annotation) {
+                self.error(
+                    format!("常量类型不匹配: 期望 {:?}, 但找到 {:?}", type_annotation, value_type),
+                    constant.span,
+                );
+            }
+        }
+        
+        // 将常量添加到符号表（作为常量）
+        self.define_symbol(
+            constant.name.clone(),
+            constant.const_type.clone(),
+            false, // 常量不可变
+            constant.span,
+        );
+        
+        Ok(Type::Void)
     }
 
     /**
@@ -428,6 +498,19 @@ impl SemanticAnalyzer {
         let enum_type = Type::Custom(enum_def.name.clone());
         if let Some(scope) = self.scopes.last_mut() {
             scope.add_type(&enum_def.name, enum_type.clone());
+            
+            // 注册每个变体作为符号
+            for variant in &enum_def.variants {
+                // 变体名添加到符号表
+                let variant_type = Type::Custom(format!("{}::{}", enum_def.name, variant.name));
+                let symbol = Symbol {
+                    name: variant.name.clone(),
+                    symbol_type: variant_type,
+                    is_mutable: false,
+                    span: enum_def.span,
+                };
+                scope.define(variant.name.clone(), symbol);
+            }
         }
         Ok(Type::Void)
     }

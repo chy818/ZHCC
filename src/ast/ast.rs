@@ -347,6 +347,22 @@ pub enum Stmt {
      * 例如: 类型 整数别名 = 整数
      */
     TypeAlias(TypeAlias),
+    
+    /**
+     * 常量定义语句
+     * 例如: 常量 最高分 = 100
+     */
+    Constant(ConstantDef),
+    
+    /**
+     * 模式匹配语句
+     * 例如: 匹配 值 {
+     *     情况 数字(n) => n,
+     *     情况 加法(a, b) => a + b,
+     *     默认 => 0
+     * }
+     */
+    Match(MatchStmt),
 }
 
 impl ASTNode for Stmt {
@@ -364,6 +380,8 @@ impl ASTNode for Stmt {
             Stmt::StructDef(e) => e.span.clone(),
             Stmt::EnumDef(e) => e.span.clone(),
             Stmt::TypeAlias(e) => e.span.clone(),
+            Stmt::Constant(e) => e.span.clone(),
+            Stmt::Match(e) => e.span.clone(),
         }
     }
 }
@@ -656,11 +674,21 @@ pub struct StructDefinition {
 
 /**
  * 枚举变体定义
+ * 支持多字段变体：枚举 表达式 { 数字(整数), 加法(左: 节点, 右: 节点) }
  */
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: String,
-    pub fields: Vec<StructField>,
+    pub fields: Vec<EnumVariantField>,
+}
+
+/**
+ * 枚举变体字段
+ */
+#[derive(Debug, Clone)]
+pub struct EnumVariantField {
+    pub name: Option<String>,  // 命名字段：左: 节点，或 None 表示位置参数
+    pub field_type: Type,
 }
 
 /**
@@ -737,6 +765,8 @@ pub struct Module {
     pub structs: Vec<StructDefinition>,
     pub enums: Vec<EnumDefinition>,
     pub type_aliases: Vec<TypeAlias>,
+    pub constants: Vec<ConstantDef>,
+    pub extern_functions: Vec<ExternFunction>,
     pub span: Span,
 }
 
@@ -748,9 +778,85 @@ impl Module {
             structs: Vec::new(),
             enums: Vec::new(),
             type_aliases: Vec::new(),
+            constants: Vec::new(),
+            extern_functions: Vec::new(),
             span 
         }
     }
+}
+
+/**
+ * 常量定义
+ * 例如: 常量 最高分 = 100
+ */
+#[derive(Debug, Clone)]
+pub struct ConstantDef {
+    pub name: String,
+    pub const_type: Type,
+    pub value: Expr,
+    pub span: Span,
+}
+
+/**
+ * 外部函数声明 (FFI)
+ * 例如: 外部 函数 malloc(大小: 整数) -> 指针 ["malloc"]
+ */
+#[derive(Debug, Clone)]
+pub struct ExternFunction {
+    pub name: String,
+    pub params: Vec<FunctionParam>,
+    pub return_type: Type,
+    pub link_name: Option<String>,  // 可选的链接名，如 "malloc"
+    pub span: Span,
+}
+
+/**
+ * 模式匹配分支
+ */
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    /// 匹配模式
+    pub pattern: MatchPattern,
+    /// 分支执行体
+    pub body: Box<Stmt>,
+}
+
+/**
+ * 匹配模式
+ */
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    /// 枚举变体模式: 情况 数字(n) => ...
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
+        /// 捕获的字段变量
+        fields: Vec<MatchFieldBinding>,
+    },
+    /// 通配符模式（默认）: 默认 => ...
+    Wildcard,
+}
+
+/**
+ * 模式中的字段绑定
+ */
+#[derive(Debug, Clone)]
+pub struct MatchFieldBinding {
+    pub name: Option<String>,  // 命名字段或位置参数
+    pub binding_name: String,  // 绑定到的变量名
+}
+
+/**
+ * 模式匹配语句
+ */
+#[derive(Debug, Clone)]
+pub struct MatchStmt {
+    /// 要匹配的值
+    pub subject: Expr,
+    /// 匹配分支
+    pub arms: Vec<MatchArm>,
+    /// span 信息
+    pub span: Span,
 }
 
 impl ASTNode for Module {
