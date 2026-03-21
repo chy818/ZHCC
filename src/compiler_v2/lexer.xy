@@ -1,7 +1,7 @@
 /**
  * @file lexer.xy
  * @brief 词法分析器 - 自展编译器
- * @description 实现完整的词法扫描功能，包含 Token 缓冲支持预读和回溯
+ * @description 实现完整的词法扫描功能
  */
 
 枚举 Tok { Kw, Id, Num, Str, Sym, End, Err }
@@ -17,13 +17,8 @@
     src: 文本,
     pos: 整数,
     line: 整数,
-    ch: 整数,
-    tokBuf: 整数,
-    tokPos: 整数,
-    tokCount: 整数
+    ch: 整数
 }
-
-定义 MAX_TOKENS 1000
 
 函数 isSpace(ch: 整数): 整数 {
     若 ch == 32 则 { 返回 1 }
@@ -75,33 +70,6 @@
     若 text == "打印" 则 { 返回 1 }
     若 text == "当" 则 { 返回 1 }
     若 text == "引入" 则 { 返回 1 }
-    若 text == "常量" 则 { 返回 1 }
-    若 text == "静态" 则 { 返回 1 }
-    返回 0
-}
-
-函数 isSymbol(ch: 整数): 整数 {
-    若 ch == 40 则 { 返回 1 }
-    若 ch == 41 则 { 返回 1 }
-    若 ch == 123 则 { 返回 1 }
-    若 ch == 125 则 { 返回 1 }
-    若 ch == 91 则 { 返回 1 }
-    若 ch == 93 则 { 返回 1 }
-    若 ch == 44 则 { 返回 1 }
-    若 ch == 59 则 { 返回 1 }
-    若 ch == 58 则 { 返回 1 }
-    若 ch == 43 则 { 返回 1 }
-    若 ch == 45 则 { 返回 1 }
-    若 ch == 42 则 { 返回 1 }
-    若 ch == 47 则 { 返回 1 }
-    若 ch == 37 则 { 返回 1 }
-    若 ch == 61 则 { 返回 1 }
-    若 ch == 60 则 { 返回 1 }
-    若 ch == 62 则 { 返回 1 }
-    若 ch == 33 则 { 返回 1 }
-    若 ch == 38 则 { 返回 1 }
-    若 ch == 124 则 { 返回 1 }
-    若 ch == 46 则 { 返回 1 }
     返回 0
 }
 
@@ -111,9 +79,6 @@
     lex.pos = 0
     lex.line = 1
     lex.ch = 0
-    lex.tokBuf = 0
-    lex.tokPos = 0
-    lex.tokCount = 0
     返回 lex
 }
 
@@ -188,13 +153,15 @@
     定义 tok: Token
     tok.line = lex.line
     tok.val = 0
-    定义 len: 整数
-    len = 0
+    定义 start: 整数
+    start = lex.pos - 1
+    定义 length: 整数
+    length = 0
     当 isAlnum(lex.ch) == 1 则 {
-        len = len + 1
+        length = length + 1
         lexerNextChar(lex)
     }
-    tok.text = lex.src
+    tok.text = 文本切片(lex.src, start, length)
     若 isKeyword(tok.text) == 1 则 {
         tok.typ = Kw
     }
@@ -211,6 +178,8 @@
     tok.val = 0
     定义 quote: 整数
     quote = lex.ch
+    定义 start: 整数
+    start = lex.pos
     lexerNextChar(lex)
     当 lex.ch != quote 则 {
         若 lex.ch == 0 则 {
@@ -219,8 +188,10 @@
         }
         lexerNextChar(lex)
     }
+    定义 length: 整数
+    length = lex.pos - start - 1
     lexerNextChar(lex)
-    tok.text = "str"
+    tok.text = 文本切片(lex.src, start, length)
     返回 tok
 }
 
@@ -259,126 +230,106 @@
     若 lex.ch == 39 则 {
         返回 lexerReadString(lex)
     }
-    若 isSymbol(lex.ch) == 1 则 {
-        tok.typ = Sym
-        定义 ch1: 整数
-        ch1 = lex.ch
-        lexerNextChar(lex)
-        若 ch1 == 61 则 {
-            若 lex.ch == 61 则 {
-                lexerNextChar(lex)
-                tok.text = "=="
-                返回 tok
-            }
-            tok.text = "="
+    tok.typ = Sym
+    定义 ch1: 整数
+    ch1 = lex.ch
+    lexerNextChar(lex)
+    若 ch1 == 61 则 {
+        若 lex.ch == 61 则 {
+            lexerNextChar(lex)
+            tok.text = "=="
             返回 tok
         }
-        若 ch1 == 33 则 {
-            若 lex.ch == 61 则 {
-                lexerNextChar(lex)
-                tok.text = "!="
-                返回 tok
-            }
-            tok.text = "!"
-            返回 tok
-        }
-        若 ch1 == 60 则 {
-            若 lex.ch == 61 则 {
-                lexerNextChar(lex)
-                tok.text = "<="
-                返回 tok
-            }
-            若 lex.ch == 60 则 {
-                lexerNextChar(lex)
-                tok.text = "<<"
-                返回 tok
-            }
-            tok.text = "<"
-            返回 tok
-        }
-        若 ch1 == 62 则 {
-            若 lex.ch == 61 则 {
-                lexerNextChar(lex)
-                tok.text = ">="
-                返回 tok
-            }
-            若 lex.ch == 62 则 {
-                lexerNextChar(lex)
-                tok.text = ">>"
-                返回 tok
-            }
-            tok.text = ">"
-            返回 tok
-        }
-        若 ch1 == 38 则 {
-            若 lex.ch == 38 则 {
-                lexerNextChar(lex)
-                tok.text = "&&"
-                返回 tok
-            }
-            tok.text = "&"
-            返回 tok
-        }
-        若 ch1 == 124 则 {
-            若 lex.ch == 124 则 {
-                lexerNextChar(lex)
-                tok.text = "||"
-                返回 tok
-            }
-            tok.text = "|"
-            返回 tok
-        }
-        若 ch1 == 43 则 { tok.text = "+" }
-        若 ch1 == 45 则 { tok.text = "-" }
-        若 ch1 == 42 则 { tok.text = "*" }
-        若 ch1 == 47 则 { tok.text = "/" }
-        若 ch1 == 37 则 { tok.text = "%" }
-        若 ch1 == 40 则 { tok.text = "(" }
-        若 ch1 == 41 则 { tok.text = ")" }
-        若 ch1 == 123 则 { tok.text = "{" }
-        若 ch1 == 125 则 { tok.text = "}" }
-        若 ch1 == 91 则 { tok.text = "[" }
-        若 ch1 == 93 则 { tok.text = "]" }
-        若 ch1 == 44 则 { tok.text = "," }
-        若 ch1 == 59 则 { tok.text = ";" }
-        若 ch1 == 58 则 { tok.text = ":" }
-        若 ch1 == 46 则 { tok.text = "." }
+        tok.text = "="
         返回 tok
     }
-    tok.typ = Err
-    tok.text = "未知字符"
-    lexerNextChar(lex)
+    若 ch1 == 33 则 {
+        若 lex.ch == 61 则 {
+            lexerNextChar(lex)
+            tok.text = "!="
+            返回 tok
+        }
+        tok.text = "!"
+        返回 tok
+    }
+    若 ch1 == 60 则 {
+        若 lex.ch == 61 则 {
+            lexerNextChar(lex)
+            tok.text = "<="
+            返回 tok
+        }
+        若 lex.ch == 60 则 {
+            lexerNextChar(lex)
+            tok.text = "<<"
+            返回 tok
+        }
+        tok.text = "<"
+        返回 tok
+    }
+    若 ch1 == 62 则 {
+        若 lex.ch == 61 则 {
+            lexerNextChar(lex)
+            tok.text = ">="
+            返回 tok
+        }
+        若 lex.ch == 62 则 {
+            lexerNextChar(lex)
+            tok.text = ">>"
+            返回 tok
+        }
+        tok.text = ">"
+        返回 tok
+    }
+    若 ch1 == 38 则 {
+        若 lex.ch == 38 则 {
+            lexerNextChar(lex)
+            tok.text = "&&"
+            返回 tok
+        }
+        tok.text = "&"
+        返回 tok
+    }
+    若 ch1 == 124 则 {
+        若 lex.ch == 124 则 {
+            lexerNextChar(lex)
+            tok.text = "||"
+            返回 tok
+        }
+        tok.text = "|"
+        返回 tok
+    }
+    若 ch1 == 43 则 { tok.text = "+" }
+    若 ch1 == 45 则 { tok.text = "-" }
+    若 ch1 == 42 则 { tok.text = "*" }
+    若 ch1 == 47 则 { tok.text = "/" }
+    若 ch1 == 37 则 { tok.text = "%" }
+    若 ch1 == 40 则 { tok.text = "(" }
+    若 ch1 == 41 则 { tok.text = ")" }
+    若 ch1 == 123 则 { tok.text = "{" }
+    若 ch1 == 125 则 { tok.text = "}" }
+    若 ch1 == 91 则 { tok.text = "[" }
+    若 ch1 == 93 则 { tok.text = "]" }
+    若 ch1 == 44 则 { tok.text = "," }
+    若 ch1 == 59 则 { tok.text = ";" }
+    若 ch1 == 58 则 { tok.text = ":" }
+    若 ch1 == 46 则 { tok.text = "." }
     返回 tok
 }
 
 函数 lexerNextToken(lex: Lexer): Token {
-    若 lex.tokPos < lex.tokCount 则 {
-        定义 tok: Token
-        tok.typ = Num
-        tok.text = ""
-        tok.val = 0
-        tok.line = lex.line
-        lex.tokPos = lex.tokPos + 1
-        返回 tok
-    }
-    定义 tok: Token
-    tok = lexerScanToken(lex)
-    lex.tokCount = lex.tokCount + 1
-    lex.tokPos = lex.tokPos + 1
-    返回 tok
+    返回 lexerScanToken(lex)
 }
 
 函数 lexerPeekToken(lex: Lexer): Token {
+    定义 savedPos: 整数
+    savedPos = lex.pos
+    定义 savedCh: 整数
+    savedCh = lex.ch
     定义 tok: Token
-    tok = lexerNextToken(lex)
-    lex.tokPos = lex.tokPos - 1
+    tok = lexerScanToken(lex)
+    lex.pos = savedPos
+    lex.ch = savedCh
     返回 tok
-}
-
-函数 lexerRewind(lex: Lexer) {
-    若 lex.tokPos > 0 则 {
-        lex.tokPos = lex.tokPos - 1
-    }
 }
 
 函数 lexerExpect(lex: Lexer, text: 文本): 整数 {

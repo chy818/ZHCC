@@ -33,7 +33,6 @@
     Body,
     Expr
 }
-
 结构体 Node {
     kind: NodeKind,
     name: 文本,
@@ -42,7 +41,6 @@
     childCount: 整数,
     sibling: 整数
 }
-
 结构体 Parser {
     pos: 整数,
     line: 整数,
@@ -50,7 +48,6 @@
     nodeCount: 整数,
     errorCount: 整数
 }
-
 定义 MAX_NODES 1000
 
 函数 parserInit(): Parser {
@@ -62,14 +59,12 @@
     p.errorCount = 0
     返回 p
 }
-
 函数 newNode(p: Parser, kind: NodeKind): 整数 {
     定义 id: 整数
     id = p.nodeCount
     p.nodeCount = p.nodeCount + 1
     返回 id
 }
-
 函数 parserError(p: Parser, msg: 文本) {
     打印("解析错误 [行 ")
     打印(p.line)
@@ -77,78 +72,65 @@
     打印(msg)
     p.errorCount = p.errorCount + 1
 }
-
 函数 parserAdvance(p: Parser) {
     p.pos = p.pos + 1
 }
-
 函数 parseType(p: Parser): 整数 {
     打印("解析类型")
     返回 0
 }
-
+函数 parsePrimary(p: Parser): 整数 {
+    打印("解析基本表达式")
+    定义 node: 整数
+    node = newNode(p, Num)
+    返回 node
+}
+函数 parseUnary(p: Parser): 整数 {
+    定义 node: 整数
+    node = parsePrimary(p)
+    返回 node
+}
+函数 parseMultiplicative(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseUnary(p)
+    返回 left
+}
+函数 parseAdditive(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseMultiplicative(p)
+    返回 left
+}
+函数 parseComparison(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseAdditive(p)
+    返回 left
+}
+函数 parseLogicalAnd(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseComparison(p)
+    返回 left
+}
+函数 parseLogicalOr(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseLogicalAnd(p)
+    返回 left
+}
+函数 parseAssignment(p: Parser): 整数 {
+    定义 left: 整数
+    left = parseLogicalOr(p)
+    返回 left
+}
 函数 parseExpr(p: Parser): 整数 {
     定义 node: 整数
     node = newNode(p, Expr)
     打印("解析表达式")
     返回 node
 }
-
-函数 parsePrimary(p: Parser): 整数 {
-    定义 node: 整数
-    node = newNode(p, Num)
-    打印("解析基本表达式")
-    返回 node
-}
-
-函数 parseUnary(p: Parser): 整数 {
-    定义 node: 整数
-    node = parsePrimary(p)
-    返回 node
-}
-
-函数 parseMultiplicative(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseUnary(p)
-    返回 left
-}
-
-函数 parseAdditive(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseMultiplicative(p)
-    返回 left
-}
-
-函数 parseComparison(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseAdditive(p)
-    返回 left
-}
-
-函数 parseLogicalAnd(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseComparison(p)
-    返回 left
-}
-
-函数 parseLogicalOr(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseLogicalAnd(p)
-    返回 left
-}
-
-函数 parseAssignment(p: Parser): 整数 {
-    定义 left: 整数
-    left = parseLogicalOr(p)
-    返回 left
-}
-
 函数 parseExprStmt(p: Parser): 整数 {
     定义 node: 整数
     node = parseAssignment(p)
     返回 node
 }
-
 函数 parseBlock(p: Parser): 整数 {
     打印("解析代码块")
     定义 node: 整数
@@ -156,7 +138,6 @@
     p.state = Body
     返回 node
 }
-
 函数 parseVarDecl(p: Parser): 整数 {
     打印("解析变量声明")
     定义 node: 整数
@@ -164,7 +145,6 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseReturn(p: Parser): 整数 {
     打印("解析返回语句")
     定义 node: 整数
@@ -172,7 +152,6 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseIf(p: Parser): 整数 {
     打印("解析条件语句")
     定义 node: 整数
@@ -180,7 +159,6 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseWhile(p: Parser): 整数 {
     打印("解析循环语句")
     定义 node: 整数
@@ -188,28 +166,24 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseCall(p: Parser): 整数 {
     打印("解析函数调用")
     定义 node: 整数
     node = newNode(p, Call)
     返回 node
 }
-
 函数 parseStatement(p: Parser): 整数 {
     打印("解析语句")
     定义 node: 整数
     node = newNode(p, Expr)
     返回 node
 }
-
 函数 parseParam(p: Parser): 整数 {
     打印("解析参数")
     定义 node: 整数
     node = newNode(p, Param)
     返回 node
 }
-
 函数 parseParams(p: Parser): 整数 {
     打印("解析参数列表")
     p.state = Params
@@ -217,12 +191,10 @@
     count = 0
     返回 count
 }
-
 函数 parseReturnType(p: Parser): 整数 {
     打印("解析返回类型")
     返回 0
 }
-
 函数 parseFunction(p: Parser): 整数 {
     打印("解析函数定义")
     定义 node: 整数
@@ -231,14 +203,12 @@
     p.state = Func
     返回 node
 }
-
 函数 parseStructBody(p: Parser): 整数 {
     打印("解析结构体体")
     定义 node: 整数
     node = newNode(p, Prog)
     返回 node
 }
-
 函数 parseStruct(p: Parser): 整数 {
     打印("解析结构体定义")
     定义 node: 整数
@@ -246,14 +216,12 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseEnumBody(p: Parser): 整数 {
     打印("解析枚举体")
     定义 node: 整数
     node = newNode(p, Prog)
     返回 node
 }
-
 函数 parseEnum(p: Parser): 整数 {
     打印("解析枚举定义")
     定义 node: 整数
@@ -261,7 +229,6 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseImport(p: Parser): 整数 {
     打印("解析导入语句")
     定义 node: 整数
@@ -269,7 +236,6 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseExtern(p: Parser): 整数 {
     打印("解析外部声明")
     定义 node: 整数
@@ -277,14 +243,12 @@
     parserAdvance(p)
     返回 node
 }
-
 函数 parseTopLevel(p: Parser): 整数 {
     打印("解析顶层声明")
     定义 node: 整数
     node = newNode(p, Prog)
     返回 node
 }
-
 函数 parseProgram(p: Parser): 整数 {
     打印("=== 开始解析程序 ===")
     定义 root: 整数
@@ -297,7 +261,6 @@
     打印("解析完成")
     返回 root
 }
-
 函数 parserRun(): 整数 {
     定义 p: Parser
     p = parserInit()
