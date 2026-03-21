@@ -1,14 +1,27 @@
 /**
  * @file codegen.xy
- * @brief 代码生成器模块 - 自展编译器
+ * @brief 代码生成器 - 自展编译器
  */
 
+// 代码生成器状态
+枚举 CodegenState {
+    Init,
+    Func,
+    Block,
+}
+
+// 输出类型
+枚举 OutputType {
+    IR,
+    Obj,
+}
+
 /**
- * 代码生成 - 生成 LLVM IR
- * 输入 AST，输出 LLVM IR 文本
+ * 代码生成主函数 - 将 AST 转换为 LLVM IR
  */
 函数 gen(): 整数 {
     打印("codegen: 代码生成器已就绪")
     打印("支持: 函数定义, 表达式, 控制流")
+    打印("目标: LLVM IR")
     返回 0
 }

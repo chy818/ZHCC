@@ -452,15 +452,11 @@ impl Parser {
             });
             
             // 检查 ',' 或 '}'
+            // 如果没有逗号但也不是 }，可能是换行分隔，允许继续
             if self.check(&TokenType::逗号) {
                 self.advance();
-            } else if !self.check(&TokenType::右花括号) {
-                return Err(ParserError::unexpected_token(
-                    "',' 或 '}'",
-                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
-                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
-                ));
             }
+            // 继续循环，让 while 条件检查是否遇到 }
         }
         
         // 期望 '}'
@@ -726,11 +722,14 @@ impl Parser {
         };
         self.position += 1;
 
-        // 冒号
-        self.expect(&TokenType::冒号)?;
-
-        // 参数类型
-        let param_type = self.parse_type()?;
+        // 可选的冒号和类型 (参数: 类型)
+        // 如果没有冒号，默认类型为 Int
+        let param_type = if self.check(&TokenType::冒号) {
+            self.position += 1;  // 消耗冒号
+            self.parse_type()?
+        } else {
+            Type::Int  // 默认类型为整数
+        };
 
         Ok(FunctionParam { name, param_type })
     }
