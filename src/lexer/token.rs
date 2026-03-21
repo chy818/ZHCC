@@ -29,6 +29,8 @@ pub enum Keyword {
     从,           // from (配合循环: i 从 0)
     到,           // to (配合循环: 到 10)
     取自,         // in (配合循环: 项 取自 集合)
+    遍历,         // for (列表推导式: for x in list)
+    在,           // in (列表推导式: for x in list)
     跳过,         // continue (比"继续"更准确)
     退出,         // break (比"中断"更准确)
     匹配,         // match (模式匹配)
@@ -275,6 +277,8 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("取自", Keyword::取自);
     map.insert("跳过", Keyword::跳过);
     map.insert("退出", Keyword::退出);
+    map.insert("遍历", Keyword::遍历);
+    map.insert("在", Keyword::在);
     map.insert("匹配", Keyword::匹配);
     map.insert("情况", Keyword::情况);
     map.insert("默认", Keyword::默认);

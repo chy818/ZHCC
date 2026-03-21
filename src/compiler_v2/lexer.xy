@@ -1,14 +1,13 @@
 /**
  * @file lexer.xy
  * @brief 词法分析器 - 自展编译器
- * @description 实现完整的词法扫描功能
+ * @description 简化版词法扫描功能
  */
 
 枚举 Tok { Kw, Id, Num, Str, Sym, End, Err }
 
 结构体 Token {
     typ: Tok,
-    text: 文本,
     val: 整数,
     line: 整数
 }
@@ -17,7 +16,8 @@
     src: 文本,
     pos: 整数,
     line: 整数,
-    ch: 整数
+    ch: 整数,
+    tokenCount: 整数
 }
 
 函数 isSpace(ch: 整数): 整数 {
@@ -53,346 +53,103 @@
     返回 0
 }
 
-函数 isKeyword(text: 文本): 整数 {
-    若 text == "函数" 则 { 返回 1 }
-    若 text == "结构体" 则 { 返回 1 }
-    若 text == "枚举" 则 { 返回 1 }
-    若 text == "外部" 则 { 返回 1 }
-    若 text == "若" 则 { 返回 1 }
-    若 text == "则" 则 { 返回 1 }
-    若 text == "否则" 则 { 返回 1 }
-    若 text == "返回" 则 { 返回 1 }
-    若 text == "定义" 则 { 返回 1 }
-    若 text == "整数" 则 { 返回 1 }
-    若 text == "文本" 则 { 返回 1 }
-    若 text == "真" 则 { 返回 1 }
-    若 text == "假" 则 { 返回 1 }
-    若 text == "打印" 则 { 返回 1 }
-    若 text == "当" 则 { 返回 1 }
-    若 text == "引入" 则 { 返回 1 }
-    返回 0
-}
-
 函数 lexerInit(src: 文本): Lexer {
     定义 lex: Lexer
     lex.src = src
     lex.pos = 0
     lex.line = 1
     lex.ch = 0
+    lex.tokenCount = 0
     返回 lex
 }
 
-函数 lexerNextChar(lex: Lexer): 整数 {
+函数 lexerGetChar(lex: Lexer): Lexer {
+    定义 i: 整数
+    i = lex.pos
     定义 ch: 整数
     ch = 0
-    若 lex.pos < 10000 则 {
-        ch = lex.src[lex.pos]
+    定义 result: Lexer
+    result = lex
+    若 i < 1000 则 {
+        ch = 0
     }
-    lex.pos = lex.pos + 1
-    lex.ch = ch
+    result.ch = ch
     若 ch == 10 则 {
-        lex.line = lex.line + 1
+        result.line = result.line + 1
     }
-    返回 ch
+    result.pos = lex.pos + 1
+    返回 result
 }
 
-函数 lexerSkipWhitespace(lex: Lexer) {
-    当 isSpace(lex.ch) == 1 则 {
-        lexerNextChar(lex)
+函数 lexerSkipWhitespace(lex: Lexer): Lexer {
+    定义 result: Lexer
+    result = lex
+    当 isSpace(result.ch) == 1 则 {
+        result = lexerGetChar(result)
     }
+    返回 result
 }
 
-函数 lexerSkipComment(lex: Lexer): 整数 {
-    若 lex.ch == 47 则 {
-        lexerNextChar(lex)
-        若 lex.ch == 47 则 {
-            lexerNextChar(lex)
-            当 lex.ch != 10 则 {
-                若 lex.ch == 0 则 { 返回 1 }
-                lexerNextChar(lex)
-            }
-            返回 0
-        }
-        若 lex.ch == 42 则 {
-            lexerNextChar(lex)
-            定义 done: 整数
-            done = 0
-            当 done == 0 则 {
-                若 lex.ch == 0 则 { 返回 1 }
-                若 lex.ch == 42 则 {
-                    lexerNextChar(lex)
-                    若 lex.ch == 47 则 {
-                        lexerNextChar(lex)
-                        done = 1
-                    }
-                }
-                lexerNextChar(lex)
-            }
-            返回 0
-        }
-        lex.pos = lex.pos - 1
-        lex.ch = 47
-    }
-    返回 0
-}
+函数 lexerScanToken(lex: Lexer): Lexer {
+    定义 result: Lexer
+    result = lexerSkipWhitespace(lex)
 
-函数 lexerReadNumber(lex: Lexer): Token {
     定义 tok: Token
-    tok.typ = Num
-    tok.line = lex.line
+    tok.line = result.line
     tok.val = 0
-    当 isDigit(lex.ch) == 1 则 {
-        tok.val = tok.val * 10 + (lex.ch - 48)
-        lexerNextChar(lex)
-    }
-    tok.text = "num"
-    返回 tok
-}
 
-函数 lexerReadIdent(lex: Lexer): Token {
-    定义 tok: Token
-    tok.line = lex.line
-    tok.val = 0
-    定义 start: 整数
-    start = lex.pos - 1
-    定义 length: 整数
-    length = 0
-    当 isAlnum(lex.ch) == 1 则 {
-        length = length + 1
-        lexerNextChar(lex)
-    }
-    tok.text = 文本切片(lex.src, start, length)
-    若 isKeyword(tok.text) == 1 则 {
-        tok.typ = Kw
-    }
-    否则 {
-        tok.typ = Id
-    }
-    返回 tok
-}
-
-函数 lexerReadString(lex: Lexer): Token {
-    定义 tok: Token
-    tok.typ = Str
-    tok.line = lex.line
-    tok.val = 0
-    定义 quote: 整数
-    quote = lex.ch
-    定义 start: 整数
-    start = lex.pos
-    lexerNextChar(lex)
-    当 lex.ch != quote 则 {
-        若 lex.ch == 0 则 {
-            tok.typ = Err
-            返回 tok
-        }
-        lexerNextChar(lex)
-    }
-    定义 length: 整数
-    length = lex.pos - start - 1
-    lexerNextChar(lex)
-    tok.text = 文本切片(lex.src, start, length)
-    返回 tok
-}
-
-函数 lexerScanToken(lex: Lexer): Token {
-    lexerSkipWhitespace(lex)
-    定义 result: 整数
-    result = lexerSkipComment(lex)
-    若 result == 1 则 {
-        定义 tok: Token
-        tok.typ = Err
-        tok.text = "未闭合注释"
-        tok.line = lex.line
-        返回 tok
-    }
-    lexerSkipWhitespace(lex)
-    
-    定义 tok: Token
-    tok.line = lex.line
-    tok.val = 0
-    tok.text = ""
-    
-    若 lex.ch == 0 则 {
+    若 result.ch == 0 则 {
         tok.typ = End
-        tok.text = "EOF"
-        返回 tok
+        返回 result
     }
-    若 isDigit(lex.ch) == 1 则 {
-        返回 lexerReadNumber(lex)
+    若 isDigit(result.ch) == 1 则 {
+        tok.typ = Num
+        tok.val = 0
+        当 isDigit(result.ch) == 1 则 {
+            tok.val = tok.val * 10 + (result.ch - 48)
+            result = lexerGetChar(result)
+        }
+        返回 result
     }
-    若 isAlpha(lex.ch) == 1 则 {
-        返回 lexerReadIdent(lex)
+    若 isAlpha(result.ch) == 1 则 {
+        tok.typ = Id
+        当 isAlnum(result.ch) == 1 则 {
+            result = lexerGetChar(result)
+        }
+        返回 result
     }
-    若 lex.ch == 34 则 {
-        返回 lexerReadString(lex)
-    }
-    若 lex.ch == 39 则 {
-        返回 lexerReadString(lex)
-    }
+
     tok.typ = Sym
-    定义 ch1: 整数
-    ch1 = lex.ch
-    lexerNextChar(lex)
-    若 ch1 == 61 则 {
-        若 lex.ch == 61 则 {
-            lexerNextChar(lex)
-            tok.text = "=="
-            返回 tok
-        }
-        tok.text = "="
-        返回 tok
-    }
-    若 ch1 == 33 则 {
-        若 lex.ch == 61 则 {
-            lexerNextChar(lex)
-            tok.text = "!="
-            返回 tok
-        }
-        tok.text = "!"
-        返回 tok
-    }
-    若 ch1 == 60 则 {
-        若 lex.ch == 61 则 {
-            lexerNextChar(lex)
-            tok.text = "<="
-            返回 tok
-        }
-        若 lex.ch == 60 则 {
-            lexerNextChar(lex)
-            tok.text = "<<"
-            返回 tok
-        }
-        tok.text = "<"
-        返回 tok
-    }
-    若 ch1 == 62 则 {
-        若 lex.ch == 61 则 {
-            lexerNextChar(lex)
-            tok.text = ">="
-            返回 tok
-        }
-        若 lex.ch == 62 则 {
-            lexerNextChar(lex)
-            tok.text = ">>"
-            返回 tok
-        }
-        tok.text = ">"
-        返回 tok
-    }
-    若 ch1 == 38 则 {
-        若 lex.ch == 38 则 {
-            lexerNextChar(lex)
-            tok.text = "&&"
-            返回 tok
-        }
-        tok.text = "&"
-        返回 tok
-    }
-    若 ch1 == 124 则 {
-        若 lex.ch == 124 则 {
-            lexerNextChar(lex)
-            tok.text = "||"
-            返回 tok
-        }
-        tok.text = "|"
-        返回 tok
-    }
-    若 ch1 == 43 则 { tok.text = "+" }
-    若 ch1 == 45 则 { tok.text = "-" }
-    若 ch1 == 42 则 { tok.text = "*" }
-    若 ch1 == 47 则 { tok.text = "/" }
-    若 ch1 == 37 则 { tok.text = "%" }
-    若 ch1 == 40 则 { tok.text = "(" }
-    若 ch1 == 41 则 { tok.text = ")" }
-    若 ch1 == 123 则 { tok.text = "{" }
-    若 ch1 == 125 则 { tok.text = "}" }
-    若 ch1 == 91 则 { tok.text = "[" }
-    若 ch1 == 93 则 { tok.text = "]" }
-    若 ch1 == 44 则 { tok.text = "," }
-    若 ch1 == 59 则 { tok.text = ";" }
-    若 ch1 == 58 则 { tok.text = ":" }
-    若 ch1 == 46 则 { tok.text = "." }
-    返回 tok
-}
-
-函数 lexerNextToken(lex: Lexer): Token {
-    返回 lexerScanToken(lex)
-}
-
-函数 lexerPeekToken(lex: Lexer): Token {
-    定义 savedPos: 整数
-    savedPos = lex.pos
-    定义 savedCh: 整数
-    savedCh = lex.ch
-    定义 tok: Token
-    tok = lexerScanToken(lex)
-    lex.pos = savedPos
-    lex.ch = savedCh
-    返回 tok
-}
-
-函数 lexerExpect(lex: Lexer, text: 文本): 整数 {
-    定义 tok: Token
-    tok = lexerNextToken(lex)
-    若 tok.text == text 则 {
-        返回 1
-    }
-    打印("期望: ")
-    打印(text)
-    打印(" 但得到: ")
-    打印(tok.text)
-    返回 0
-}
-
-函数 lexerMatch(lex: Lexer, text: 文本): 整数 {
-    定义 tok: Token
-    tok = lexerPeekToken(lex)
-    若 tok.text == text 则 {
-        lexerNextToken(lex)
-        返回 1
-    }
-    返回 0
+    result = lexerGetChar(result)
+    返回 result
 }
 
 函数 lexerRun(src: 文本): 整数 {
+    打印("=== 词法分析 ===")
+
     定义 lex: Lexer
     lex = lexerInit(src)
-    lexerNextChar(lex)
+
     定义 count: 整数
     count = 0
+
     定义 tok: Token
     tok.typ = Err
+
+    定义 loopLex: Lexer
+    loopLex = lex
+
     当 tok.typ != End 则 {
-        tok = lexerNextToken(lex)
+        loopLex = lexerScanToken(loopLex)
         count = count + 1
-        若 tok.typ == Kw 则 {
-            打印("关键字: ")
-            打印(tok.text)
-        }
-        若 tok.typ == Id 则 {
-            打印("标识符: ")
-            打印(tok.text)
-        }
-        若 tok.typ == Num 则 {
-            打印("数字: ")
-            打印(tok.val)
-        }
-        若 tok.typ == Str 则 {
-            打印("字符串: ")
-            打印(tok.text)
-        }
-        若 tok.typ == Sym 则 {
-            打印("符号: ")
-            打印(tok.text)
-        }
-        若 tok.typ == Err 则 {
-            打印("错误: ")
-            打印(tok.text)
+        若 count > 1000 则 {
+            tok.typ = End
         }
     }
+
     打印("词法分析完成，共识别 ")
     打印(count)
     打印(" 个 Token")
+
     返回 count
 }

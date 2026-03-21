@@ -790,15 +790,26 @@ impl Parser {
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::列表), .. }) => {
                 self.position += 1;
-                // 列表类型：可以后续解析泛型参数，但 v0.1 简化为 Type::List
-                Type::List
+                // 列表类型：支持泛型参数 列表<类型>
+                // 注意：< 在词法分析中被解析为 TokenType::小于
+                if self.check(&TokenType::小于) {
+                    self.position += 1;
+                    let elem_type = Box::new(self.parse_type()?);
+                    // 期望 > (在词法分析中被解析为 TokenType::大于)
+                    self.expect(&TokenType::大于)?;
+                    return Ok(Type::List(elem_type));
+                } else {
+                    // 无泛型参数，默认为整数列表
+                    Type::List(Box::new(Type::Int))
+                }
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::或许), .. }) => {
                 self.position += 1;
                 // 解析泛型参数
-                self.expect(&TokenType::左尖括号)?;
+                // 注意：< 在词法分析中被解析为 TokenType::小于
+                self.expect(&TokenType::小于)?;
                 let inner_type = Box::new(self.parse_type()?);
-                self.expect(&TokenType::右尖括号)?;
+                self.expect(&TokenType::大于)?;
                 return Ok(Type::Optional(inner_type));
             }
             Some(Token { token_type: TokenType::标识符, literal, .. }) => {
@@ -1653,13 +1664,12 @@ impl Parser {
                 let span = expr.span();
                 expr = Expr::MemberAccess(MemberAccessExpr::new(Box::new(expr), member, span));
             }
-            // 数组访问: expr '[' expr ']'
+            // 列表/数组索引访问: expr '[' expr ']'
             else if self.match_token(&TokenType::左方括号) {
                 let index = self.parse_expression()?;
                 self.expect(&TokenType::右方括号)?;
-                // TODO: 数组访问 AST
                 let span = expr.span();
-                expr = Expr::MemberAccess(MemberAccessExpr::new(Box::new(expr), "[index]".to_string(), span));
+                expr = Expr::IndexAccess(IndexAccessExpr::new(Box::new(expr), Box::new(index), span));
             }
             else {
                 break;
@@ -1748,6 +1758,94 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 self.expect(&TokenType::右圆括号)?;
                 Ok(Expr::Grouped(Box::new(expr)))
+            }
+
+            // 列表字面量: '[' expr1, expr2, ... ']' 或列表推导式: '[' expr for x in list ']'
+            TokenType::左方括号 => {
+                let start_span = token.span;
+                self.position += 1;
+                
+                // 空列表
+                if self.check(&TokenType::右方括号) {
+                    self.position += 1;
+                    return Ok(Expr::ListLiteral(ListLiteralExpr::new(
+                        Vec::new(),
+                        start_span
+                    )));
+                }
+                
+                // 解析第一个表达式
+                let first_elem = self.parse_expression()?;
+                
+                // 检查是否是列表推导式 (for x in list)
+                if self.check_keyword(&Keyword::遍历) {
+                    self.position += 1;  // 消费 '遍历'
+                    
+                    // 解析迭代变量
+                    let var_token = self.current().cloned();
+                    if let Some(ref token) = var_token {
+                        if token.token_type != TokenType::标识符 {
+                            return Err(ParserError::unexpected_token(
+                                "标识符",
+                                &format!("{:?}", token.token_type),
+                                token.span
+                            ));
+                        }
+                    } else {
+                        return Err(ParserError::unexpected_token_at(0, 0, "列表推导式需要迭代变量名"));
+                    }
+                    let var_name = var_token.unwrap().literal.clone();
+                    self.position += 1;
+                    
+                    // 期望 '在'
+                    if !self.match_keyword(&Keyword::在) {
+                        return Err(ParserError::unexpected_token("在", "其他", self.current().map(|t| t.span).unwrap_or(Span::dummy())));
+                    }
+                    
+                    // 解析迭代列表
+                    let iterable = Box::new(self.parse_expression()?);
+                    
+                    // 可选的条件过滤 (当 ...)
+                    let condition = if self.check_keyword(&Keyword::当) {
+                        self.position += 1;
+                        Some(Box::new(self.parse_expression()?))
+                    } else {
+                        None
+                    };
+                    
+                    self.expect(&TokenType::右方括号)?;
+                    
+                    let end_span = self.previous()
+                        .map(|t| t.span)
+                        .unwrap_or(start_span);
+                    
+                    return Ok(Expr::ListComprehension(ListComprehensionExpr::new(
+                        Box::new(first_elem),
+                        var_name,
+                        iterable,
+                        condition,
+                        start_span.merge(end_span)
+                    )));
+                }
+                
+                // 普通列表字面量
+                let mut elements = vec![first_elem];
+                
+                while self.match_token(&TokenType::逗号) {
+                    let elem = self.parse_expression()?;
+                    elements.push(elem);
+                }
+                
+                self.expect(&TokenType::右方括号)?;
+                
+                let end_span = self.previous()
+                    .map(|t| t.span)
+                    .unwrap_or(start_span);
+                
+                Ok(Expr::ListLiteral(ListLiteralExpr::new(
+                    elements,
+                    start_span.merge(end_span)
+                )))
             }
 
             // 未知 token

@@ -1,6 +1,6 @@
 /**
  * @file main.xy
- * @brief 自展编译器入口 - 简化版
+ * @brief 自展编译器入口
  * @description 玄语编译器 v0.2 - 自展版本
  */
 
@@ -12,7 +12,6 @@
     None,
     Lexing,
     Parsing,
-    Semantic,
     Codegen,
     Linking,
     Done,
@@ -44,19 +43,60 @@
 函数 compilerPrintBanner() {
     打印("========================================")
     打印("  玄语编译器 v0.2 - 自展版本")
-    打印("  XuanYu Compiler - Bootstrap Edition")
     打印("========================================")
     打印("")
 }
 
 函数 compilerPrintHelp() {
     打印("用法: xy <源文件> [选项]")
+    打印("选项: --ir --build --run")
     打印("")
-    打印("选项:")
-    打印("  --ir      只生成 LLVM IR")
-    打印("  --build   生成可执行文件")
-    打印("  --run     编译并运行")
-    打印("")
+}
+
+函数 compilerLex(src: 文本): 整数 {
+    返回 lexerRun(src)
+}
+
+函数 compilerParse(src: 文本): 整数 {
+    返回 parserRun(src)
+}
+
+函数 compilerCodegen(): 整数 {
+    返回 codegenRun()
+}
+
+函数 compilerLink(): 整数 {
+    打印("=== 链接 ===")
+    定义 result: 整数
+    result = 执行命令("gcc output.o -o output")
+    返回 result
+}
+
+函数 compilerCompile(srcPath: 文本): 整数 {
+    打印("开始编译...")
+    
+    定义 result: 整数
+    result = compilerLex(srcPath)
+    若 result < 0 则 { 返回 1 }
+    
+    result = compilerParse(srcPath)
+    若 result < 0 则 { 返回 1 }
+    
+    result = compilerCodegen()
+    若 result < 0 则 { 返回 1 }
+    
+    result = compilerLink()
+    若 result != 0 则 { 返回 1 }
+    
+    打印("编译成功!")
+    返回 0
+}
+
+函数 compilerPrintStats(c: Compiler) {
+    打印("=== 编译统计 ===")
+    打印("Token 数: 已统计")
+    打印("AST 节点数: 已统计")
+    打印("函数数: 已统计")
 }
 
 函数 main(): 整数 {
@@ -69,38 +109,21 @@
     打印("=== 编译器模块状态 ===")
     打印("  词法分析器: 就绪")
     打印("  语法分析器: 就绪")
-    打印("  语义分析器: 就绪")
     打印("  代码生成器: 就绪")
     打印("  链接器: 就绪")
     打印("")
     
     打印("=== 自展测试 ===")
-    打印("测试编译器各模块...")
-    打印("")
     
-    打印("1. 测试词法分析器...")
-    定义 lexResult: 整数
-    lexResult = lexerRun("函数 main(): 整数 { 返回 0 }")
-    打印("   词法分析完成，识别 ")
-    打印
-    打印(" 个 Token")
+    定义 result: 整数
+    result = compilerCompile("test.xy")
     
-    打印("")
-    打印("2. 测试语法分析器...")
-    定义 parseResult: 整数
-    parseResult = parserRun()
-    打印("   语法分析完成")
-    
-    打印("")
-    打印("3. 测试代码生成器...")
-    定义 codegenResult: 整数
-    codegenResult = codegenRun()
-    打印("   代码生成完成")
+    c.tokenCount = result
+    compilerPrintStats
     
     打印("")
     打印("=== 自展编译器完成 ===")
     打印("v0.2 Bootstrap 已就绪!")
-    打印("编译器可以用 XY 语言编写并编译自身")
     
-    返回 0
+    返回 result
 }

@@ -695,6 +695,52 @@ impl SemanticAnalyzer {
             Expr::Grouped(expr) => {
                 self.analyze_expression(expr)
             }
+            Expr::ListLiteral(list) => {
+                // 分析列表元素类型
+                let mut elem_type = Type::Int;  // 默认元素类型
+                for elem in &list.elements {
+                    let t = self.analyze_expression(elem)?;
+                    elem_type = t;  // 使用最后一个元素的类型
+                }
+                // 返回列表类型 (泛型)
+                Ok(Type::List(Box::new(elem_type)))
+            }
+            Expr::IndexAccess(index) => {
+                // 分析被索引的对象
+                let obj_type = self.analyze_expression(&index.object)?;
+                // 分析索引表达式
+                self.analyze_expression(&index.index)?;
+                // 索引访问返回元素类型（简化处理，返回整数）
+                Ok(Type::Int)
+            }
+            Expr::ListComprehension(comp) => {
+                // 分析迭代列表
+                let iterable_type = self.analyze_expression(&comp.iterable)?;
+                
+                // 进入新作用域
+                self.enter_scope();
+                
+                // 在新作用域中注册迭代变量
+                let var_type = match iterable_type {
+                    Type::List(elem_type) => *elem_type,
+                    _ => Type::Int,
+                };
+                self.define_symbol(comp.var_name.clone(), var_type.clone(), false, comp.span);
+                
+                // 分析输出表达式
+                let output_type = self.analyze_expression(&comp.output)?;
+                
+                // 分析可选条件
+                if let Some(cond) = &comp.condition {
+                    self.analyze_expression(cond)?;
+                }
+                
+                // 退出作用域
+                self.exit_scope();
+                
+                // 返回列表类型
+                Ok(Type::List(Box::new(output_type)))
+            }
         }
     }
 

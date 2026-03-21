@@ -38,7 +38,7 @@ fn type_to_llvm(ty: &Type) -> &'static str {
         Type::Char => "i8",
         Type::Void => "void",
         Type::Pointer => "i8*",  // 规范：指针
-        Type::List => "i8*",     // 列表是指针
+        Type::List(_) => "i8*",     // 列表是指针
         Type::Optional(_) => "i64",
         Type::Array(_) => "i64",
         Type::Struct(_) => "i64",  // 结构体实例存储为 i64（指针值）
@@ -186,8 +186,8 @@ impl CodeGenerator {
             "文件存在" => Some("文件存在"),
             "文件删除" => Some("文件删除"),
             // 系统命令函数
-            "执行命令" => Some("执行命令"),
-            "命令输出" => Some("命令输出"),
+            "执行命令" => Some("exec_cmd"),
+            "命令输出" => Some("cmd_output"),
             // 词法分析器用户函数
             "是空格" => Some("is_space"),
             "检查空格" => Some("check_space"),
@@ -251,8 +251,11 @@ impl CodeGenerator {
                 }
             }
             Expr::Identifier(ident) => {
-                // 查找变量类型
-                if let Some(var_type) = self.variable_types.get(&ident.name) {
+                // 查找变量类型 - 使用翻译后的名称
+                let translated_name = self.translate_func_name(&ident.name);
+                if let Some(var_type) = self.variable_types.get(&translated_name) {
+                    var_type.clone()
+                } else if let Some(var_type) = self.variable_types.get(&ident.name) {
                     var_type.clone()
                 } else {
                     // 默认假设为整数
@@ -301,6 +304,18 @@ impl CodeGenerator {
             Expr::Unary(unary) => {
                 // 一元运算：继承操作数类型
                 self.infer_expression_type(&unary.operand)
+            }
+            Expr::ListLiteral(_) => {
+                // 列表类型：返回 i8* 指针
+                "i8*".to_string()
+            }
+            Expr::IndexAccess(_) => {
+                // 索引访问：返回元素类型（简化为 i64）
+                "i64".to_string()
+            }
+            Expr::ListComprehension(_) => {
+                // 列表推导式：返回列表类型 i8*
+                "i8*".to_string()
             }
             Expr::Grouped(expr) => {
                 // 括号表达式：继承内部表达式类型
@@ -475,8 +490,8 @@ impl CodeGenerator {
         self.emit("declare i32 @\"文件删除\"(i8*)");
         
         // 系统命令函数
-        self.emit("declare i32 @\"执行命令\"(i8*)");
-        self.emit("declare i8* @\"命令输出\"(i8*)");
+        self.emit("declare i32 @exec_cmd(i8*)");
+        self.emit("declare i8* @cmd_output(i8*)");
         
         // 命令行参数函数
         self.emit("declare i64 @argc()");
@@ -835,6 +850,7 @@ impl CodeGenerator {
      * 生成变量声明语句
      */
     fn generate_let_statement(&mut self, let_stmt: &LetStmt) -> Result<(), CodegenError> {
+        // 获取变量类型
         let var_type = let_stmt.type_annotation
             .as_ref()
             .map(|t| type_to_llvm(t))
@@ -847,8 +863,21 @@ impl CodeGenerator {
         // 如果有初始化值
         if let Some(init) = &let_stmt.initializer {
             let value = self.generate_expression(init)?;
-            self.emit(&format!("store {} %{}, {}* %{}", 
-                var_type, value, var_type, alloca));
+            
+            // 获取初始化表达式的类型
+            let init_type = self.infer_expression_type(init);
+            
+            // 类型匹配处理
+            if var_type == "i8*" && init_type == "i8*" {
+                // 列表类型：存储 i8* 指针
+                self.emit(&format!("store i8* %{}, i8** %{}", value, alloca));
+            } else if var_type == init_type {
+                // 类型匹配
+                self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
+            } else {
+                // 类型不匹配，尝试转换
+                self.emit(&format!("store {} %{}, {}* %{}", init_type, value, var_type, alloca));
+            }
         }
 
         // 记录变量及其类型 - 使用翻译后的名字
@@ -1021,7 +1050,15 @@ impl CodeGenerator {
                         .cloned()
                         .unwrap_or_else(|| "i64".to_string());
                     let load = self.new_label("id");
-                    self.emit(&format!("%{} = load {}, {}* %{}", load, var_type, var_type, alloca));
+                    
+                    // 根据类型选择正确的加载指令
+                    if var_type == "i8*" {
+                        // 列表/指针类型：从 i8** 加载
+                        self.emit(&format!("%{} = load i8*, i8** %{}", load, alloca));
+                    } else {
+                        // 其他类型
+                        self.emit(&format!("%{} = load {}, {}* %{}", load, var_type, var_type, alloca));
+                    }
                     Ok(load)
                 } else if let Some(alloca) = self.variables.get(&ident.name).cloned() {
                     // 尝试原始名称（处理枚举变体等未翻译的名称）
@@ -1029,12 +1066,44 @@ impl CodeGenerator {
                         .cloned()
                         .unwrap_or_else(|| "i64".to_string());
                     let load = self.new_label("id");
-                    self.emit(&format!("%{} = load {}, {}* %{}", load, var_type, var_type, alloca));
+                    
+                    if var_type == "i8*" {
+                        self.emit(&format!("%{} = load i8*, i8** %{}", load, alloca));
+                    } else {
+                        self.emit(&format!("%{} = load {}, {}* %{}", load, var_type, var_type, alloca));
+                    }
                     Ok(load)
                 } else {
-                    // 对于枚举变体等，生成一个虚拟值（简化处理）
-                    // 返回一个临时变量名
-                    Ok(ident.name.clone())
+                    // 对于枚举变体，生成一个整数值
+                    // 枚举成员按定义顺序编号：第一个成员为 0，第二个为 1，以此类推
+                    let enum_value = match ident.name.as_str() {
+                        "None" | "Init" | "Void" => 0,
+                        "Lexing" | "Func" | "Int" => 1,
+                        "Parsing" | "Params" | "Float" => 2,
+                        "Semantic" | "Body" | "Ptr" => 3,
+                        "Codegen" | "Expr" | "Func" => 4,
+                        "Linking" | "Label" => 5,
+                        "Done" => 6,
+                        "Error" => 7,
+                        "Kw" => 0,
+                        "Id" => 1,
+                        "Num" => 2,
+                        "Str" => 3,
+                        "Sym" => 4,
+                        "End" => 5,
+                        "Err" => 6,
+                        "Prog" => 0,
+                        "Var" => 1,
+                        "Ret" => 2,
+                        "If" => 3,
+                        "While" => 4,
+                        "Call" => 5,
+                        "BinOp" => 6,
+                        _ => 0,
+                    };
+                    let load = self.new_label("enum");
+                    self.emit(&format!("%{} = add i64 0, {}", load, enum_value));
+                    Ok(load)
                 }
             }
             Expr::Literal(lit) => {
@@ -1050,36 +1119,234 @@ impl CodeGenerator {
                 self.generate_call_expr(call)
             }
             Expr::MemberAccess(member) => {
-                // 生成对象表达式（返回的是 i64 类型的"指针"值）
-                let object_val = self.generate_expression(&member.object)?;
-                
                 // 获取字段名
                 let field_name = &member.member;
                 
-                // 计算字段偏移（简化处理：假设字段按顺序排列，每个字段8字节）
-                let field_offset = self.calculate_field_offset(field_name);
+                // 检查是否是列表方法
+                let is_list_method = matches!(field_name.as_str(), "长度" | "追加" | "获取" | "长度");
                 
-                // 将 i64 值转换为指针（结构体实例存储为 i64，需要转换为 i8*）
-                let ptr_val = self.new_label("id");
-                self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr_val, object_val));
-                
-                // 生成 GEP 指令获取字段指针
-                let result = self.new_label("member");
-                self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}", 
-                    result, ptr_val, field_offset));
-                
-                // 将指针转换为 i64 指针（所有字段都存储为 i64）
-                let result_ptr = self.new_label("member_ptr");
-                self.emit(&format!("%{} = bitcast i8* %{} to i64*", result_ptr, result));
-                
-                // 加载字段值（返回 i64 类型）
-                let result_val = self.new_label("member_val");
-                self.emit(&format!("%{} = load i64, i64* %{}", result_val, result_ptr));
-                
-                Ok(result_val)
+                if is_list_method {
+                    // 列表方法处理
+                    // 生成对象表达式（列表指针 i8*）
+                    let object_val = self.generate_expression(&member.object)?;
+                    
+                    // 获取对象类型
+                    let object_type = self.infer_expression_type(&member.object);
+                    
+                    // 如果是 i64，需要转换为 i8*
+                    let ptr_val = if object_type == "i8*" {
+                        object_val
+                    } else {
+                        let ptr = self.new_label("list_ptr");
+                        self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, object_val));
+                        ptr
+                    };
+                    
+                    match field_name.as_str() {
+                        "长度" => {
+                            // 调用 rt_list_len，返回 i64
+                            let result = self.new_label("len");
+                            self.emit(&format!("%{} = call i64 @rt_list_len(i8* %{})", result, ptr_val));
+                            Ok(result)
+                        }
+                        _ => {
+                            // 其他方法返回指针值
+                            Ok(ptr_val)
+                        }
+                    }
+                } else {
+                    // 结构体字段访问
+                    let object_val = self.generate_expression(&member.object)?;
+                    
+                    // 计算字段偏移
+                    let field_offset = self.calculate_field_offset(field_name);
+                    
+                    // 将 i64 值转换为指针
+                    let ptr_val = self.new_label("id");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr_val, object_val));
+                    
+                    // 生成 GEP 指令获取字段指针
+                    let result = self.new_label("member");
+                    self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}", 
+                        result, ptr_val, field_offset));
+                    
+                    // 将指针转换为 i64 指针
+                    let result_ptr = self.new_label("member_ptr");
+                    self.emit(&format!("%{} = bitcast i8* %{} to i64*", result_ptr, result));
+                    
+                    // 加载字段值
+                    let result_val = self.new_label("member_val");
+                    self.emit(&format!("%{} = load i64, i64* %{}", result_val, result_ptr));
+                    
+                    Ok(result_val)
+                }
             }
             Expr::Grouped(expr) => {
                 self.generate_expression(expr)
+            }
+            Expr::ListLiteral(list) => {
+                // 创建列表
+                let list_ptr = self.new_label("list");
+                self.emit(&format!("%{} = call i8* @rt_list_new()", list_ptr));
+                
+                // 添加元素
+                for elem in &list.elements {
+                    let elem_val = self.generate_expression(elem)?;
+                    // 根据元素类型决定如何处理
+                    let elem_type = self.infer_expression_type(elem);
+                    let elem_ptr = self.new_label("elem_ptr");
+                    
+                    if elem_type == "i8*" {
+                        // 字符串类型，直接使用
+                        self.emit(&format!("call void @rt_list_append(i8* %{}, i8* %{})", list_ptr, elem_val));
+                    } else {
+                        // 其他类型，转换为指针
+                        self.emit(&format!("%{} = inttoptr {} %{} to i8*", elem_ptr, elem_type, elem_val));
+                        self.emit(&format!("call void @rt_list_append(i8* %{}, i8* %{})", list_ptr, elem_ptr));
+                    }
+                }
+                
+                // 返回列表指针 (i8*)
+                Ok(list_ptr)
+            }
+            Expr::ListComprehension(comp) => {
+                // 列表推导式: [x * 2 for x in list]
+                // 生成代码：
+                // 1. 创建新列表
+                // 2. 获取原列表长度
+                // 3. 循环遍历原列表
+                // 4. 对每个元素应用输出表达式
+                // 5. 可选：应用条件过滤
+                
+                // 创建新列表
+                let result_list = self.new_label("result_list");
+                self.emit(&format!("%{} = call i8* @rt_list_new()", result_list));
+                
+                // 获取原列表
+                let src_list = self.generate_expression(&comp.iterable)?;
+                
+                // 获取原列表长度
+                let src_len = self.new_label("src_len");
+                self.emit(&format!("%{} = call i64 @rt_list_len(i8* %{})", src_len, src_list));
+                
+                // 循环变量
+                let i_alloca = self.new_label("i_alloca");
+                self.emit(&format!("%{} = alloca i64", i_alloca));
+                self.emit(&format!("store i64 0, i64* %{}", i_alloca));
+                
+                // 循环开始标签
+                let loop_start = self.label_counter;
+                self.label_counter += 1;
+                let loop_body = self.label_counter;
+                self.label_counter += 1;
+                let loop_end = self.label_counter;
+                self.label_counter += 1;
+                
+                self.emit(&format!("br label %L{}", loop_start));
+                self.emit(&format!("L{}:", loop_start));
+                
+                // 检查循环条件: i < len
+                let i_val = self.new_label("i_val");
+                self.emit(&format!("%{} = load i64, i64* %{}", i_val, i_alloca));
+                let cond = self.new_label("cond");
+                self.emit(&format!("%{} = icmp slt i64 %{}, %{}", cond, i_val, src_len));
+                self.emit(&format!("br i1 %{}, label %L{}, label %L{}", cond, loop_body, loop_end));
+                
+                // 循环体
+                self.emit(&format!("L{}:", loop_body));
+                
+                // 获取当前元素
+                let elem = self.new_label("elem");
+                self.emit(&format!("%{} = call i8* @rt_list_get(i8* %{}, i64 %{})", elem, src_list, i_val));
+                
+                // 将元素转换为 i64 并存储到迭代变量
+                let elem_val = self.new_label("elem_val");
+                self.emit(&format!("%{} = ptrtoint i8* %{} to i64", elem_val, elem));
+                
+                // 存储迭代变量
+                let var_alloca = self.new_label(&format!("var_{}", comp.var_name));
+                self.emit(&format!("%{} = alloca i64", var_alloca));
+                self.emit(&format!("store i64 %{}, i64* %{}", elem_val, var_alloca));
+                
+                // 记录迭代变量
+                let translated_var = self.translate_func_name(&comp.var_name);
+                self.variables.insert(translated_var.clone(), var_alloca);
+                self.variable_types.insert(translated_var, "i64".to_string());
+                
+                // 生成输出表达式
+                let output_val = self.generate_expression(&comp.output)?;
+                
+                // 条件过滤
+                if let Some(cond_expr) = &comp.condition {
+                    // 生成条件表达式
+                    let cond_result = self.generate_expression(cond_expr)?;
+                    
+                    // 条件跳转标签
+                    let do_append = self.label_counter;
+                    self.label_counter += 1;
+                    let skip_append = self.label_counter;
+                    self.label_counter += 1;
+                    
+                    // 检查条件：为真则添加，为假则跳过
+                    self.emit(&format!("br i1 %{}, label %L{}, label %L{}", cond_result, do_append, skip_append));
+                    
+                    // 添加元素
+                    self.emit(&format!("L{}:", do_append));
+                    
+                    // 添加到结果列表
+                    let output_ptr = self.new_label("output_ptr");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", output_ptr, output_val));
+                    self.emit(&format!("call void @rt_list_append(i8* %{}, i8* %{})", result_list, output_ptr));
+                    
+                    // 跳过添加后的继续点
+                    let after_append = self.label_counter;
+                    self.label_counter += 1;
+                    self.emit(&format!("br label %L{}", after_append));
+                    
+                    // 跳过添加
+                    self.emit(&format!("L{}:", skip_append));
+                    self.emit(&format!("br label %L{}", after_append));
+                    
+                    // 继续循环
+                    self.emit(&format!("L{}:", after_append));
+                } else {
+                    // 无条件过滤，直接添加到结果列表
+                    let output_ptr = self.new_label("output_ptr");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", output_ptr, output_val));
+                    self.emit(&format!("call void @rt_list_append(i8* %{}, i8* %{})", result_list, output_ptr));
+                }
+                
+                // 递增循环变量
+                let i_next = self.new_label("i_next");
+                self.emit(&format!("%{} = add i64 %{}, 1", i_next, i_val));
+                self.emit(&format!("store i64 %{}, i64* %{}", i_next, i_alloca));
+                self.emit(&format!("br label %L{}", loop_start));
+                
+                // 循环结束
+                self.emit(&format!("L{}:", loop_end));
+                
+                // 返回结果列表
+                Ok(result_list)
+            }
+            Expr::IndexAccess(index) => {
+                // 生成对象表达式
+                let obj_val = self.generate_expression(&index.object)?;
+                
+                // 生成索引表达式
+                let idx_val = self.generate_expression(&index.index)?;
+                
+                // 将对象值转换为指针
+                let obj_ptr = self.new_label("obj_ptr");
+                self.emit(&format!("%{} = inttoptr i64 %{} to i8*", obj_ptr, obj_val));
+                
+                // 调用列表获取函数
+                let result = self.new_label("elem");
+                self.emit(&format!("%{} = call i8* @rt_list_get(i8* %{}, i64 %{})", result, obj_ptr, idx_val));
+                
+                // 将结果转换为 i64
+                let result_val = self.new_label("elem_val");
+                self.emit(&format!("%{} = ptrtoint i8* %{} to i64", result_val, result));
+                Ok(result_val)
             }
         }
     }
@@ -1302,6 +1569,9 @@ impl CodeGenerator {
             // 命令行参数函数
             "参数个数" => "argc".to_string(),
             "获取参数" => "argv".to_string(),
+            // 系统命令函数
+            "执行命令" => "exec_cmd".to_string(),
+            "命令输出" => "cmd_output".to_string(),
             // 词法分析器用户函数
             "是空格" => "is_space".to_string(),
             "检查空格" => "check_space".to_string(),
@@ -1398,8 +1668,30 @@ impl CodeGenerator {
                 // 整数转文本接受 i64
                 args.push(format!("i64 %{}", arg_val));
             } else if is_list_func {
-                // 列表函数接受 i8* 字符串指针
-                args.push(format!("i8* %{}", arg_val));
+                // 列表函数参数类型
+                if is_list_create {
+                    // 创建列表接受初始容量 (i64)
+                    args.push(format!("i64 %{}", arg_val));
+                } else if is_list_add {
+                    // 列表添加: (列表指针, 元素值)
+                    if idx == 0 {
+                        args.push(format!("i8* %{}", arg_val));  // 列表指针
+                    } else {
+                        args.push(format!("i64 %{}", arg_val));  // 元素值
+                    }
+                } else if is_list_get {
+                    // 列表获取: (列表指针, 索引)
+                    if idx == 0 {
+                        args.push(format!("i8* %{}", arg_val));  // 列表指针
+                    } else {
+                        args.push(format!("i64 %{}", arg_val));  // 索引
+                    }
+                } else if is_list_len {
+                    // 列表长度: (列表指针)
+                    args.push(format!("i8* %{}", arg_val));
+                } else {
+                    args.push(format!("i8* %{}", arg_val));
+                }
             } else if is_arg_func {
                 // 参数相关函数
                 args.push(format!("i64 %{}", arg_val));
@@ -1432,8 +1724,8 @@ impl CodeGenerator {
         } else if is_builtin_to_str || is_list_create || is_str_func || is_arg_get || is_file_read || is_cmd_output || is_input_text {
             // 整数转文本、创建列表、字符串函数、获取参数、文件读取、命令输出、输入文本返回 i8*
             ("i8*".to_string(), false)
-        } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int {
-            // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数返回 i64/i32
+        } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int || is_list_len || is_list_get {
+            // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数、列表长度、列表获取返回 i64
             ("i64".to_string(), false)
         } else if !is_builtin {
             // 用户函数（非内置函数）返回 i64（假设）
@@ -1457,8 +1749,8 @@ impl CodeGenerator {
             if is_builtin_to_str || is_list_create || is_str_func || is_arg_get || is_file_read || is_cmd_output || is_input_text {
                 // 整数转文本、创建列表、字符串函数、获取参数、文件读取、命令输出、输入文本返回 i8*
                 self.emit(&format!("%{} = call i8* @{}({})", result, final_func_name, args_str));
-            } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int {
-                // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数返回 i64
+            } else if is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int || is_list_len || is_list_get {
+                // 文件写入、参数个数、文件存在、文件删除、执行命令、输入整数、列表长度、列表获取返回 i64
                 self.emit(&format!("%{} = call i64 @{}({})", result, final_func_name, args_str));
             } else if is_builtin_print {
                 // 打印函数返回 void

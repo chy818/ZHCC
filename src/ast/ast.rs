@@ -53,6 +53,24 @@ pub enum Expr {
     MemberAccess(MemberAccessExpr),
     
     /**
+     * 列表字面量表达式
+     * 例如: [1, 2, 3], ["a", "b", "c"]
+     */
+    ListLiteral(ListLiteralExpr),
+    
+    /**
+     * 索引访问表达式
+     * 例如: 列表[0], 数组[索引]
+     */
+    IndexAccess(IndexAccessExpr),
+    
+    /**
+     * 列表推导式
+     * 例如: [x * 2 for x in 列表]
+     */
+    ListComprehension(ListComprehensionExpr),
+    
+    /**
      * 括号表达式
      */
     Grouped(Box<Expr>),
@@ -67,6 +85,9 @@ impl ASTNode for Expr {
             Expr::Unary(e) => e.span(),
             Expr::Call(e) => e.span(),
             Expr::MemberAccess(e) => e.span(),
+            Expr::ListLiteral(e) => e.span(),
+            Expr::IndexAccess(e) => e.span(),
+            Expr::ListComprehension(e) => e.span(),
             Expr::Grouped(e) => e.span(),
         }
     }
@@ -269,6 +290,86 @@ impl MemberAccessExpr {
 }
 
 impl ASTNode for MemberAccessExpr {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/**
+ * 列表字面量表达式
+ * 例如: [1, 2, 3], ["a", "b", "c"]
+ */
+#[derive(Debug, Clone)]
+pub struct ListLiteralExpr {
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+
+impl ListLiteralExpr {
+    pub fn new(elements: Vec<Expr>, span: Span) -> Self {
+        Self { elements, span }
+    }
+}
+
+impl ASTNode for ListLiteralExpr {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/**
+ * 索引访问表达式
+ * 例如: 列表[0], 数组[索引]
+ */
+#[derive(Debug, Clone)]
+pub struct IndexAccessExpr {
+    pub object: Box<Expr>,
+    pub index: Box<Expr>,
+    pub span: Span,
+}
+
+impl IndexAccessExpr {
+    pub fn new(object: Box<Expr>, index: Box<Expr>, span: Span) -> Self {
+        Self { object, index, span }
+    }
+}
+
+impl ASTNode for IndexAccessExpr {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/**
+ * 列表推导式
+ * 例如: [x * 2 for x in 列表]
+ */
+#[derive(Debug, Clone)]
+pub struct ListComprehensionExpr {
+    /// 输出表达式
+    pub output: Box<Expr>,
+    /// 迭代变量名
+    pub var_name: String,
+    /// 迭代的列表
+    pub iterable: Box<Expr>,
+    /// 可选的条件过滤
+    pub condition: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+impl ListComprehensionExpr {
+    pub fn new(
+        output: Box<Expr>,
+        var_name: String,
+        iterable: Box<Expr>,
+        condition: Option<Box<Expr>>,
+        span: Span,
+    ) -> Self {
+        Self { output, var_name, iterable, condition, span }
+    }
+}
+
+impl ASTNode for ListComprehensionExpr {
     fn span(&self) -> Span {
         self.span
     }
@@ -643,8 +744,8 @@ pub enum Type {
     Void,
     /// 指针 (用于FFI和列表)
     Pointer,
-    /// 列表类型
-    List,
+    /// 列表类型 (泛型: List<T>)
+    List(Box<Type>),
     /// 或许类型
     Optional(Box<Type>),
     /// 数组

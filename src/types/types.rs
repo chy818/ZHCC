@@ -19,7 +19,7 @@ pub enum CCASType {
     Void,
     Array(Box<CCASType>),
     Pointer(Box<CCASType>),
-    List,
+    List(Box<CCASType>),  // 泛型列表
     Custom(String),
 }
 
@@ -39,7 +39,7 @@ impl CCASType {
             CCASType::Void => 0,
             CCASType::Array(t) => t.size(),
             CCASType::Pointer(_) => 8,
-            CCASType::List => 8,  // 列表是指针
+            CCASType::List(_) => 8,  // 列表是指针
             CCASType::Custom(_) => 8,
         }
     }
@@ -55,7 +55,7 @@ impl CCASType {
             (CCASType::Long, CCASType::Float) => true,
             (CCASType::Long, CCASType::Double) => true,
             (CCASType::Float, CCASType::Double) => true,
-            (CCASType::List, CCASType::List) => true,
+            (CCASType::List(_), CCASType::List(_)) => true,
             _ => self == target,
         }
     }
@@ -79,7 +79,7 @@ impl TypeContext {
         types.insert("文本".to_string(), CCASType::String);
         types.insert("字符".to_string(), CCASType::Char);
         types.insert("无返回".to_string(), CCASType::Void);
-        types.insert("列表".to_string(), CCASType::List);
+        types.insert("列表".to_string(), CCASType::List(Box::new(CCASType::Int)));
         Self { types }
     }
 

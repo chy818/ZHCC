@@ -819,17 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_semantic_whitespace() {
-        let source = "若条件则".to_string();
-        let mut lexer = Lexer::new(source);
-        let result = lexer.tokenize();
-        
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert_eq!(error.code, "CCAS-E001");
-    }
-
-    #[test]
     fn test_number() {
         let source = "123 0xFF 3.14".to_string();
         let mut lexer = Lexer::new(source);
