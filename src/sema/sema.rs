@@ -115,6 +115,19 @@ impl SemanticAnalyzer {
     }
 
     /**
+     * 查找类型定义
+     */
+    fn lookup_type(&self, name: &str) -> Option<&Type> {
+        // 从当前作用域向上查找
+        for scope in self.scopes.iter().rev() {
+            if let Some(t) = scope.lookup_type(name) {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    /**
      * 定义符号
      */
     fn define_symbol(&mut self, name: String, symbol_type: Type, is_mutable: bool, span: Span) {
@@ -664,16 +677,22 @@ impl SemanticAnalyzer {
     fn analyze_expression(&mut self, expr: &Expr) -> Result<Type, Vec<TypeError>> {
         match expr {
             Expr::Identifier(ident) => {
-                // 查找符号
+                // 首先查找变量符号
                 let symbol = self.lookup_symbol(&ident.name);
                 match symbol {
                     Some(s) => Ok(s.symbol_type.clone()),
                     None => {
-                        Err(vec![TypeError {
-                            code: "CCAS-T002".to_string(),
-                            message: format!("未定义的变量: {}", ident.name),
-                            span: ident.span,
-                        }])
+                        // 变量未找到，检查是否是类型名（枚举类型可以作为表达式使用）
+                        if self.lookup_type(&ident.name).is_some() {
+                            // 返回自定义类型
+                            Ok(Type::Custom(ident.name.clone()))
+                        } else {
+                            Err(vec![TypeError {
+                                code: "CCAS-T002".to_string(),
+                                message: format!("未定义的变量或类型: {}", ident.name),
+                                span: ident.span,
+                            }])
+                        }
                     }
                 }
             }

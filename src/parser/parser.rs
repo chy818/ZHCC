@@ -865,7 +865,8 @@ impl Parser {
             TokenType::Keyword(Keyword::返回) => self.parse_return_statement(),
             
             // 条件语句: 若 expr 则 { ... } 否则 { ... }
-            TokenType::Keyword(Keyword::若) => self.parse_if_statement(),
+            // 也支持: 如果 expr 则 { ... } 否则 { ... }
+            TokenType::Keyword(Keyword::若) | TokenType::Keyword(Keyword::如果) => self.parse_if_statement(),
             
             // 循环语句: 当 expr 则 { ... }
             TokenType::Keyword(Keyword::当) => self.parse_while_statement(),
@@ -1138,7 +1139,15 @@ impl Parser {
             .map(|t| t.span)
             .unwrap_or(Span::dummy());
 
-        self.position += 1; // 消耗 '若'
+        // 支持 '若' 和 '如果' 两种语法
+        if !self.check_keyword(&Keyword::若) && !self.check_keyword(&Keyword::如果) {
+            return Err(ParserError::unexpected_token_at(
+                start_span.start_line,
+                start_span.start_column,
+                "期望 '若' 或 '如果'",
+            ));
+        }
+        self.position += 1; // 消耗 '若' 或 '如果'
 
         let condition = self.parse_expression()?;
 
@@ -1380,7 +1389,7 @@ impl Parser {
     fn parse_or_expression(&mut self) -> Result<Expr, ParserError> {
         let mut left = self.parse_and_expression()?;
 
-        while self.match_token(&TokenType::或) {
+        while self.match_keyword(&Keyword::或) {
             let right = self.parse_and_expression()?;
             let span = left.span().merge(right.span());
             left = Expr::Binary(BinaryExpr::new(

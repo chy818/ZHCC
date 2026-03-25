@@ -547,7 +547,46 @@
     打印("")
 }
 
-/* ============ 阶段执行函数 ============ */
+/* ============ 编译结果结构 ============ */
+
+/**
+ * 编译结果
+ */
+结构体 CompileResult {
+    成功: 整数,
+    错误计数: 整数,
+    警告计数: 整数,
+    IR输出: 文本,
+    耗时: 浮点数
+}
+
+/**
+ * 创建失败结果
+ */
+函数 createFailedResult(): CompileResult {
+    定义 result: CompileResult
+    result.成功 = 0
+    result.错误计数 = 1
+    result.警告计数 = 0
+    result.IR输出 = ""
+    result.耗时 = 0.0
+    返回 result
+}
+
+/**
+ * 创建成功结果
+ */
+函数 createSuccessResult(ir: 文本, errors: 整数, warnings: 整数): CompileResult {
+    定义 result: CompileResult
+    result.成功 = 1
+    result.错误计数 = errors
+    result.警告计数 = warnings
+    result.IR输出 = ir
+    result.耗时 = 0.0
+    返回 result
+}
+
+/* ============ 编译流程 ============ */
 
 /**
  * 执行词法分析阶段
@@ -557,17 +596,11 @@
     stage.name = "词法分析"
     stage.status = 1
 
-    打印("")
-    打印("========================================")
-    打印("  玄语编译器 v0.2 (自展版本)")
-    打印("========================================")
-    打印("")
-    打印("源文件: ")
-    打印(source)
-    打印("")
+    定义 tokens: 列表
+    tokens = lexer分析源码(source)
 
     定义 tokenCount: 整数
-    tokenCount = lexerRun(source)
+    tokenCount = 列表长度(tokens)
 
     stage.status = 2
     打印("词法分析阶段: ")
@@ -580,13 +613,27 @@
 /**
  * 执行语法分析阶段
  */
-函数 runParserStage(tokenCount: 整数): 整数 {
+函数 runParserStage(source: 文本, tokens: 列表): 整数 {
     定义 stage: CompileStage
     stage.name = "语法分析"
     stage.status = 1
 
+    定义 ast: AST节点
+    ast = parser分析Tokens(tokens, source)
+
     定义 funcCount: 整数
-    funcCount = parserRun(列表())
+    funcCount = 0
+
+    定义 i: 整数
+    i = 0
+    当 i < 列表长度(ast.children) 且 i < 100 则 {
+        定义 child: AST节点
+        child = ast.children[i]
+        若 child.kind == 5 则 {
+            funcCount = funcCount + 1
+        }
+        i = i + 1
+    }
 
     stage.status = 2
     打印("语法分析阶段: ")
@@ -599,16 +646,23 @@
 /**
  * 执行语义分析阶段
  */
-函数 runSemaStage(astNodeCount: 整数): 整数 {
+函数 runSemaStage(ast: AST节点): 整数 {
     定义 stage: CompileStage
     stage.name = "语义分析"
     stage.status = 1
 
     定义 result: 整数
-    result = semaRun(astNodeCount)
+    result = sema遍历AST(列表(), ast)
 
     stage.status = 2
-    打印("语义分析阶段: 完成")
+    打印("语义分析阶段: ")
+    若 result == 0 则 {
+        打印("通过")
+    } 否则 {
+        打印("发现 ")
+        打印(result)
+        打印(" 个错误")
+    }
 
     返回 result
 }
@@ -616,18 +670,18 @@
 /**
  * 执行代码生成阶段
  */
-函数 runCodegenStage(funcCount: 整数): 整数 {
+函数 runCodegenStage(ast: AST节点): 文本 {
     定义 stage: CompileStage
     stage.name = "代码生成"
     stage.status = 1
 
-    定义 nodeCount: 整数
-    nodeCount = codegenRun(funcCount * 10)
+    定义 moduleName: 文本
+    moduleName = codegen遍历AST(ast)
 
     stage.status = 2
     打印("代码生成阶段: 完成")
 
-    返回 nodeCount
+    返回 moduleName
 }
 
 /* ============ 主编译流程 ============ */
@@ -648,21 +702,29 @@
     tokenCount = runLexerStage(source)
 
     定义 funcCount: 整数
-    funcCount = runParserStage(tokenCount)
+    funcCount = runParserStage(source, 列表())
 
     定义 astNodeCount: 整数
     astNodeCount = funcCount * 10
 
     定义 semaResult: 整数
-    semaResult = runSemaStage(astNodeCount)
+    semaResult = runSemaStage(列表())
 
-    定义 nodeCount: 整数
-    nodeCount = runCodegenStage(funcCount)
+    定义 irModule: 文本
+    irModule = runCodegenStage(列表())
 
     打印("")
     打印("=== 编译完成 ===")
 
-    返回 0
+    若 semaResult == 0 则 {
+        打印("编译成功!")
+    } 否则 {
+        打印("编译失败 (")
+        打印(semaResult)
+        打印(" 个错误)")
+    }
+
+    返回 semaResult
 }
 
 /**

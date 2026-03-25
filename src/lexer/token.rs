@@ -20,9 +20,11 @@ use std::sync::LazyLock;
 pub enum Keyword {
     // ========== 控制流 (Control Flow) ==========
     若,           // if
+    如果,         // if (XY语法变体)
     则,           // then (CCAS 特色)
     否则,         // else
     否则若,       // else if / elif
+    或,           // || (逻辑或关键字)
     当,           // while
     直到,         // until (do-while 后置条件)
     循环,         // loop / for 通用入口
@@ -303,6 +305,8 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("指针", Keyword::指针);
     map.insert("列表", Keyword::列表);
     map.insert("或许", Keyword::或许);
+    map.insert("如果", Keyword::如果);
+    map.insert("或", Keyword::或);
 
     // ========== 内存安全与所有权 ==========
     map.insert("定义", Keyword::定义);

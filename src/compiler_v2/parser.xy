@@ -310,33 +310,42 @@
 /* 解析函数调用 */
 函数 parseCall(p: Parser, funcNode: AST节点): AST节点 {
     定义 tok: Token
-    tok = parserPeekToken(p)
 
     /* 消费 ( */
+    tok = parserPeekToken(p)
     若 tok.值 == "(" 则 {
         parserConsume(p)
+    } 否则 {
+        报错("期望 '('")
     }
 
-    /* 解析参数 */
     funcNode.kind = 12  // 调用表达式
     funcNode.children = 列表()
 
-    tok = parserPeekToken(p)
-    若 tok.值 != ")" 则 {
-        当 tok.值 != ")" 且 tok.值 != "" 则 {
-            定义 arg: AST节点
-            arg = parseExpression(p)
-            funcNode.children = arg  // 添加参数到children
+    /* 循环解析参数 */
+    循环 {
+        tok = parserPeekToken(p)
 
-            /* 检查是否有逗号 */
-            tok = parserPeekToken(p)
-            若 tok.值 == "," 则 {
-                parserConsume(p)
-            } 否则 {
-                若 tok.值 == ")" 则 {
-                    跳出
-                }
-            }
+        // 结束条件：遇到 )
+        若 tok.值 == ")" 则 {
+            跳出
+        }
+
+        // 文件末尾，缺少 )
+        若 tok.值 == "" 则 {
+            报错("函数调用未闭合，期望 ')'")
+        }
+
+        // 解析一个参数
+        定义 arg = parseExpression(p)
+        funcNode.children.append(arg)  // ✅ 追加，不是覆盖
+
+        // 看下一个 token：逗号 or 结束
+        tok = parserPeekToken(p)
+        若 tok.值 == "," 则 {
+            parserConsume(p)  // 吃掉逗号，继续下一个参数
+        } 否则 若 tok.值 != ")" 则 {
+            报错("参数后期望逗号或右括号")
         }
     }
 
@@ -344,6 +353,8 @@
     tok = parserPeekToken(p)
     若 tok.值 == ")" 则 {
         parserConsume(p)
+    } 否则 {
+        报错("期望 ')' 结束函数调用")
     }
 
     返回 funcNode

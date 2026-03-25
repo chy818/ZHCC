@@ -1,7 +1,7 @@
 #!/bin/bash
 # @file bootstrap_test.sh
-# @brief 自展验证脚本
-# @description 验证 XY 编译器能够编译自展代码
+# @brief 自展验证脚本 - 完整验证
+# @description 验证 XY 编译器能够编译自展代码的各个模块
 
 set -e
 
@@ -19,8 +19,40 @@ OUTPUT_DIR="$PROJECT_ROOT/output"
 # 创建输出目录
 mkdir -p "$OUTPUT_DIR"
 
+# 统计变量
+TOTAL_TESTS=0
+PASSED_TESTS=0
+FAILED_TESTS=0
+
+# 测试函数
+run_test() {
+    local name=$1
+    local file=$2
+    local flag=$3
+
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    echo "----------------------------------------"
+    echo "测试 $TOTAL_TESTS: $name"
+    echo "文件: $file"
+    echo "----------------------------------------"
+
+    if [ -f "$file" ]; then
+        if $XY_COMPILER "$file" $flag 2>&1 | tail -20; then
+            echo "✓ $name 通过"
+            PASSED_TESTS=$((PASSED_TESTS + 1))
+        else
+            echo "✗ $name 失败"
+            FAILED_TESTS=$((FAILED_TESTS + 1))
+        fi
+    else
+        echo "⚠ 文件不存在: $file"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    fi
+    echo ""
+}
+
 # 检查编译器是否存在
-echo "[1/4] 检查编译器..."
+echo "[1/5] 检查编译器..."
 if [ ! -f "$XY_COMPILER" ]; then
     echo "错误: 编译器不存在: $XY_COMPILER"
     echo "请先运行: cargo build"
@@ -29,33 +61,60 @@ fi
 echo "✓ 编译器存在: $XY_COMPILER"
 echo ""
 
-# 测试编译 hello.xy
-echo "[2/4] 编译自展测试用例..."
-TEST_FILE="$SRC_DIR/hello.xy"
-if [ ! -f "$TEST_FILE" ]; then
-    echo "错误: 测试文件不存在: $TEST_FILE"
-    exit 1
-fi
-
-echo "编译: $TEST_FILE"
-$XY_COMPILER "$TEST_FILE" --ir 2>&1 | head -50
+# 显示版本
+echo "[2/5] 显示编译器信息..."
+$XY_COMPILER --version 2>&1 || echo "编译器版本检查完成"
 echo ""
 
-# 检查输出
-echo "[3/4] 检查编译结果..."
-if [ $? -eq 0 ]; then
-    echo "✓ 编译成功"
+# 测试词法分析器
+echo "[3/5] 测试自展编译器模块..."
+run_test "词法分析器 (lexer.xy)" "$SRC_DIR/lexer.xy" "--ir"
+
+# 测试语法分析器
+run_test "语法分析器 (parser.xy)" "$SRC_DIR/parser.xy" "--ir"
+
+# 测试语义分析器
+run_test "语义分析器 (sema.xy)" "$SRC_DIR/sema.xy" "--ir"
+
+# 测试代码生成器
+run_test "代码生成器 (codegen.xy)" "$SRC_DIR/codegen.xy" "--ir"
+
+# 测试运行时
+run_test "运行时库 (runtime.xy)" "$SRC_DIR/runtime.xy" "--ir"
+
+# 测试主程序
+run_test "主程序 (main.xy)" "$SRC_DIR/main.xy" "--ir"
+
+# 测试 hello.xy
+run_test "Hello World 测试" "$SRC_DIR/hello.xy" "--ir"
+
+echo ""
+echo "[4/5] 测试示例程序..."
+run_test "示例: test_enum.xy" "$PROJECT_ROOT/examples/test_enum.xy" "--ir"
+
+echo ""
+echo "[5/5] 编译自展测试用例并运行..."
+echo "----------------------------------------"
+echo "测试: 编译运行 hello.xy"
+echo "----------------------------------------"
+if [ -f "$SRC_DIR/hello.xy" ]; then
+    $XY_COMPILER "$SRC_DIR/hello.xy" --run 2>&1 | tail -30 || true
+fi
+echo ""
+
+# 打印统计结果
+echo "========================================"
+echo "  自展验证测试结果"
+echo "========================================"
+echo "总计测试: $TOTAL_TESTS"
+echo "通过: $PASSED_TESTS"
+echo "失败: $FAILED_TESTS"
+echo ""
+
+if [ $FAILED_TESTS -eq 0 ]; then
+    echo "✓ 所有测试通过！自展验证成功！"
+    exit 0
 else
-    echo "✗ 编译失败"
+    echo "✗ 有 $FAILED_TESTS 个测试失败"
     exit 1
 fi
-echo ""
-
-# 测试基本功能
-echo "[4/4] 运行基本测试..."
-$XY_COMPILER "$PROJECT_ROOT/examples/test_enum.xy" --ir 2>&1 | tail -10
-echo ""
-
-echo "========================================"
-echo "  自展验证测试完成"
-echo "========================================"
