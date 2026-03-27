@@ -1,0 +1,104 @@
+{
+  "name": "xuanyu",
+  "displayName": "玄语 (XY Language)",
+  "description": "玄语编程语言 VS Code 插件 - 提供语法高亮、代码补全、错误提示等功能",
+  "version": "0.1.0",
+  "publisher": "xuanyu",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:xuanyu"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "xuanyu",
+        "aliases": [
+          "玄语",
+          "XY",
+          "xuanyu"
+        ],
+        "extensions": [
+          ".xy"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/xuanyu-light.svg",
+          "dark": "./icons/xuanyu-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "xuanyu",
+        "scopeName": "source.xuanyu",
+        "path": "./syntaxes/xuanyu.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "xuanyu.compile",
+        "title": "玄语: 编译当前文件"
+      },
+      {
+        "command": "xuanyu.run",
+        "title": "玄语: 运行当前文件"
+      },
+      {
+        "command": "xuanyu.showIR",
+        "title": "玄语: 显示 LLVM IR"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "xuanyu.compile",
+          "group": "xuanyu@1"
+        },
+        {
+          "command": "xuanyu.run",
+          "group": "xuanyu@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "玄语",
+      "properties": {
+        "xuanyu.compilerPath": {
+          "type": "string",
+          "default": "xy",
+          "description": "玄语编译器路径"
+        },
+        "xuanyu.enableDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用实时错误诊断"
+        },
+        "xuanyu.enableCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用代码补全"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}
