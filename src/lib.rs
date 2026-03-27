@@ -11,6 +11,10 @@ pub mod types;
 pub mod error;
 pub mod codegen;
 pub mod sema;
+pub mod repl;
+pub mod package;
+pub mod macro_system;
+pub mod compiler;
 
 pub use lexer::{Lexer, LexerError, Token, TokenType, Keyword, Span};
 pub use parser::{Parser, parse};
@@ -22,3 +26,7 @@ pub use error::{
     ErrorLanguage, get_error_language, set_error_language,
     report_error, report_error_lang,
 };
+pub use repl::{Repl, ReplConfig, ReplContext, start_repl};
+pub use package::{PackageConfig, PackageManager, run_package_command};
+pub use macro_system::{MacroSystem, MacroDefinition, MacroCall, MacroExpansion, MacroError};
+pub use compiler::{IncrementalCompiler, IncrementalResult, FileChange, ModuleInfo, BuildStats};

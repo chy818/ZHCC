@@ -1001,6 +1001,12 @@ impl Parser {
             // 模式匹配: 匹配 expr { ... }
             TokenType::Keyword(Keyword::匹配) => self.parse_match_statement(),
             
+            // 异常处理: 尝试 { ... } 捕获 { ... } 最终 { ... }
+            TokenType::Keyword(Keyword::尝试) => self.parse_try_statement(),
+            
+            // 抛出异常: 抛出 expr
+            TokenType::Keyword(Keyword::抛出) => self.parse_throw_statement(),
+            
             // 块语句: { ... }
             TokenType::左花括号 => self.parse_block_statement(),
             
@@ -1457,6 +1463,178 @@ impl Parser {
     }
 
     /**
+     * 解析 try 语句 (异常处理)
+     * 
+     * 语法:
+     * 尝试 {
+     *     // 可能抛出异常的代码
+     * } 捕获 (e: 异常类型) {
+     *     // 异常处理代码
+     * } 最终 {
+     *     // 清理代码
+     * }
+     * 
+     * 示例:
+     * 尝试 {
+     *     定义 结果 = 除法(10, 0)
+     * } 捕获 (e: 除零错误) {
+     *     打印("除零错误")
+     * } 最终 {
+     *     打印("清理")
+     * }
+     */
+    fn parse_try_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        // 消耗 '尝试' 关键字
+        self.expect(&TokenType::Keyword(Keyword::尝试))?;
+
+        // 解析 try 块
+        let try_block = self.parse_block_statement()?;
+        let try_block = match try_block {
+            Stmt::Block(block) => block,
+            _ => return Err(ParserError::unexpected_token(
+                "try 块",
+                &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                start_span
+            )),
+        };
+
+        // 解析 catch 子句 (可以有多个)
+        let mut catch_clauses = Vec::new();
+        while self.check_keyword(&Keyword::捕获) {
+            let catch_span = self.current().map(|t| t.span).unwrap_or(Span::dummy());
+            self.advance(); // 消耗 '捕获'
+
+            // 期望 '('
+            self.expect(&TokenType::左圆括号)?;
+
+            // 解析异常变量名
+            let var_name = match self.current() {
+                Some(Token { token_type: TokenType::标识符, literal, .. }) => literal.clone(),
+                _ => return Err(ParserError::unexpected_token(
+                    "异常变量名",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                )),
+            };
+            self.advance();
+
+            // 可选的异常类型
+            let exception_type = if self.match_token(&TokenType::冒号) {
+                let type_name = match self.current() {
+                    Some(Token { token_type: TokenType::标识符, literal, .. }) => literal.clone(),
+                    Some(Token { token_type: TokenType::Keyword(k), literal, .. }) => {
+                        // 处理关键字作为类型名的情况
+                        literal.clone()
+                    },
+                    _ => return Err(ParserError::unexpected_token(
+                        "异常类型",
+                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                    )),
+                };
+                self.advance();
+                Some(self.parse_exception_type(&type_name))
+            } else {
+                None
+            };
+
+            // 期望 ')'
+            self.expect(&TokenType::右圆括号)?;
+
+            // 解析 catch 块
+            let catch_body = self.parse_block_statement()?;
+            let catch_body = match catch_body {
+                Stmt::Block(block) => block,
+                _ => return Err(ParserError::unexpected_token(
+                    "catch 块",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    catch_span
+                )),
+            };
+
+            catch_clauses.push(CatchClause::new(var_name, exception_type, catch_body, catch_span));
+        }
+
+        // 解析 finally 块 (可选)
+        let finally_block = if self.check_keyword(&Keyword::最终) {
+            self.advance(); // 消耗 '最终'
+            let finally_body = self.parse_block_statement()?;
+            match finally_body {
+                Stmt::Block(block) => Some(block),
+                _ => return Err(ParserError::unexpected_token(
+                    "finally 块",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    start_span
+                )),
+            }
+        } else {
+            None
+        };
+
+        let end_span = self.previous().map(|t| t.span).unwrap_or(start_span);
+
+        Ok(Stmt::Try(TryStmt::new(
+            try_block,
+            catch_clauses,
+            finally_block,
+            start_span.merge(end_span)
+        )))
+    }
+
+    /**
+     * 解析异常类型
+     */
+    fn parse_exception_type(&self, type_name: &str) -> ExceptionType {
+        match type_name {
+            "异常" | "Exception" => ExceptionType::Exception,
+            "运行时错误" | "RuntimeError" => ExceptionType::RuntimeError,
+            "类型错误" | "TypeError" => ExceptionType::TypeError,
+            "空指针异常" | "NullPointer" => ExceptionType::NullPointer,
+            "索引越界" | "IndexOutOfBounds" => ExceptionType::IndexOutOfBounds,
+            "除零错误" | "DivideByZero" => ExceptionType::DivideByZero,
+            "文件错误" | "FileError" => ExceptionType::FileError,
+            "网络错误" | "NetworkError" => ExceptionType::NetworkError,
+            _ => ExceptionType::Custom(type_name.to_string()),
+        }
+    }
+
+    /**
+     * 解析 throw 语句 (抛出异常)
+     * 
+     * 语法:
+     * 抛出 异常("错误信息")
+     * 抛出 变量名
+     * 
+     * 示例:
+     * 抛出 异常("参数不能为空")
+     * 抛出 文件错误("文件不存在")
+     */
+    fn parse_throw_statement(&mut self) -> Result<Stmt, ParserError> {
+        let start_span = self.current()
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy());
+
+        // 消耗 '抛出' 关键字
+        self.expect(&TokenType::Keyword(Keyword::抛出))?;
+
+        // 解析异常表达式
+        let exception = self.parse_expression()?;
+
+        self.match_token(&TokenType::分号); // 可选分号
+
+        let end_span = exception.span();
+
+        Ok(Stmt::Throw(ThrowStmt::new(
+            exception,
+            start_span.merge(end_span)
+        )))
+    }
+
+    /**
      * 解析块语句
      */
     fn parse_block_statement(&mut self) -> Result<Stmt, ParserError> {
@@ -1509,7 +1687,7 @@ impl Parser {
     fn parse_or_expression(&mut self) -> Result<Expr, ParserError> {
         let mut left = self.parse_and_expression()?;
 
-        while self.match_keyword(&Keyword::或) {
+        while self.match_token(&TokenType::或) {
             let right = self.parse_and_expression()?;
             let span = left.span().merge(right.span());
             left = Expr::Binary(BinaryExpr::new(
@@ -1525,12 +1703,11 @@ impl Parser {
 
     /**
      * 解析逻辑与 (&&)
-     * 支持: 与, 且
      */
     fn parse_and_expression(&mut self) -> Result<Expr, ParserError> {
         let mut left = self.parse_equality_expression()?;
 
-        while self.match_token(&TokenType::与) || self.match_keyword(&Keyword::且) {
+        while self.match_token(&TokenType::与) {
             let right = self.parse_equality_expression()?;
             let span = left.span().merge(right.span());
             left = Expr::Binary(BinaryExpr::new(
@@ -2009,6 +2186,19 @@ impl Parser {
                 let body = self.parse_expression()?;
 
                 Ok(Expr::Lambda(LambdaExpr::new(params, Box::new(body), span)))
+            }
+
+            // Await 表达式: 等待 表达式
+            // 例如: 等待 异步函数()
+            // 或: 等待 future
+            TokenType::Keyword(Keyword::等待) => {
+                let span = token.span.clone();
+                self.position += 1; // 消耗 '等待'
+
+                // 解析要等待的表达式
+                let expr = self.parse_postfix_expression()?;
+
+                Ok(Expr::Await(AwaitExpr::new(expr, span)))
             }
 
             // 整数字面量

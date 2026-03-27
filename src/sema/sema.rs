@@ -587,7 +587,68 @@ impl SemanticAnalyzer {
                 // 分析模式匹配
                 self.analyze_match_statement(match_stmt)
             }
+            Stmt::Try(try_stmt) => {
+                // 分析异常处理
+                self.analyze_try_statement(try_stmt)
+            }
+            Stmt::Throw(throw_stmt) => {
+                // 分析抛出异常
+                self.analyze_throw_statement(throw_stmt)
+            }
         }
+    }
+
+    /**
+     * 分析 try-catch-finally 语句
+     */
+    fn analyze_try_statement(&mut self, try_stmt: &TryStmt) -> Result<Type, Vec<TypeError>> {
+        // 分析 try 块
+        self.enter_scope();
+        for stmt in &try_stmt.try_block.statements {
+            self.analyze_statement(stmt)?;
+        }
+        self.exit_scope();
+
+        // 分析 catch 子句
+        for catch_clause in &try_stmt.catch_clauses {
+            self.enter_scope();
+            // 将异常变量添加到作用域
+            self.define_symbol(
+                catch_clause.var_name.clone(),
+                Type::Custom("异常".to_string()),
+                false,
+                catch_clause.span.clone(),
+            );
+            // 分析 catch 块
+            for stmt in &catch_clause.body.statements {
+                self.analyze_statement(stmt)?;
+            }
+            self.exit_scope();
+        }
+
+        // 分析 finally 块
+        if let Some(ref finally_block) = try_stmt.finally_block {
+            self.enter_scope();
+            for stmt in &finally_block.statements {
+                self.analyze_statement(stmt)?;
+            }
+            self.exit_scope();
+        }
+
+        Ok(Type::Void)
+    }
+
+    /**
+     * 分析 throw 语句
+     */
+    fn analyze_throw_statement(&mut self, throw_stmt: &ThrowStmt) -> Result<Type, Vec<TypeError>> {
+        // 分析异常表达式
+        let exception_type = self.analyze_expression(&throw_stmt.exception)?;
+        
+        // 验证抛出的是异常类型
+        // 简化实现：接受任何类型
+        
+        Ok(exception_type)
     }
 
     /**
@@ -748,38 +809,46 @@ impl SemanticAnalyzer {
 
     /**
      * 验证变量声明语句
+     * 支持类型推断：如果没有显式类型标注，从初始化表达式推断类型
      */
     fn analyze_let_statement(&mut self, let_stmt: &LetStmt) -> Result<(), Vec<TypeError>> {
-        // 分析初始化表达式
-        if let Some(init) = &let_stmt.initializer {
+        // 分析初始化表达式并推断类型
+        let inferred_type = if let Some(init) = &let_stmt.initializer {
             let init_type = self.analyze_expression(init)?;
+            Some(init_type)
+        } else {
+            None
+        };
 
-            // 检查类型标注
+        // 检查类型标注与初始化值类型是否兼容
+        if let Some(init) = &let_stmt.initializer {
             if let Some(type_annotation) = &let_stmt.type_annotation {
-                if !init_type.can_cast_to(type_annotation) {
-                    self.error(
-                        format!("类型不匹配: 期望 {:?}, 但找到 {:?}", type_annotation, init_type),
-                        let_stmt.span,
-                    );
+                if let Some(ref init_type) = inferred_type {
+                    if !init_type.can_cast_to(type_annotation) {
+                        self.error(
+                            format!("类型不匹配: 期望 {:?}, 但找到 {:?}", type_annotation, init_type),
+                            let_stmt.span,
+                        );
+                    }
                 }
             }
-        } else if let_stmt.type_annotation.is_none() {
-            // 需要类型标注或初始化值
-            // 注意：XY编译器自展时会遇到前向引用问题，这里不报错而是使用默认类型
-            // self.error(
-            //     "变量声明需要类型标注或初始化值".to_string(),
-            //     let_stmt.span,
-            // );
         }
 
+        // 确定最终变量类型
+        // 优先级: 显式类型标注 > 推断类型 > 默认类型
+        let var_type = if let Some(type_annotation) = &let_stmt.type_annotation {
+            type_annotation.clone()
+        } else if let Some(ref init_type) = inferred_type {
+            init_type.clone()
+        } else {
+            Type::Unknown
+        };
+
         // 定义符号
-        // 如果有类型标注，使用类型标注；否则检查初始化值的类型
-        // 注意：XY编译器自展时可能遇到未定义的类型，我们使用 Unknown 或 Int 作为默认值
-        let var_type = let_stmt.type_annotation.clone().unwrap_or(Type::Unknown);
         self.define_symbol(
             let_stmt.name.clone(),
             var_type,
-            let_stmt.is_mutable, // 使用 AST 中的 is_mutable 标志
+            let_stmt.is_mutable,
             let_stmt.span,
         );
 
@@ -993,28 +1062,37 @@ impl SemanticAnalyzer {
                 // 索引访问返回元素类型（简化处理，返回整数）
                 Ok(Type::Int)
             }
+            Expr::Await(await_expr) => {
+                // 分析被等待的表达式
+                let inner_type = self.analyze_expression(&await_expr.expr)?;
+                // 如果内部类型是 Future<T>，返回 T
+                match inner_type {
+                    Type::Future(t) => Ok(*t),
+                    _ => Ok(inner_type),
+                }
+            }
             Expr::ListComprehension(comp) => {
                 // 分析迭代列表
                 let iterable_type = self.analyze_expression(&comp.iterable)?;
-                
+
                 // 进入新作用域
                 self.enter_scope();
-                
+
                 // 在新作用域中注册迭代变量
                 let var_type = match iterable_type {
                     Type::List(elem_type) => *elem_type,
                     _ => Type::Int,
                 };
                 self.define_symbol(comp.var_name.clone(), var_type.clone(), false, comp.span);
-                
+
                 // 分析输出表达式
                 let output_type = self.analyze_expression(&comp.output)?;
-                
+
                 // 分析可选条件
                 if let Some(cond) = &comp.condition {
                     self.analyze_expression(cond)?;
                 }
-                
+
                 // 退出作用域
                 self.exit_scope();
 
@@ -1139,6 +1217,10 @@ impl SemanticAnalyzer {
             }
             Expr::Grouped(inner) => {
                 self.collect_free_variables(inner, param_names, captured)
+            }
+            Expr::Await(await_expr) => {
+                // Await 表达式：收集被等待表达式中的自由变量
+                self.collect_free_variables(&await_expr.expr, param_names, captured)
             }
             Expr::Literal(_) => Ok(()),
         }

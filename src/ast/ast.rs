@@ -78,6 +78,14 @@ pub enum Expr {
     Lambda(LambdaExpr),
 
     /**
+     * Await 表达式
+     * 用于等待异步操作完成
+     * 例如: 等待 异步函数()
+     * 或: 等待 future
+     */
+    Await(AwaitExpr),
+
+    /**
      * 括号表达式
      */
     Grouped(Box<Expr>),
@@ -96,6 +104,7 @@ impl ASTNode for Expr {
             Expr::IndexAccess(e) => e.span(),
             Expr::ListComprehension(e) => e.span(),
             Expr::Lambda(e) => e.span(),
+            Expr::Await(e) => e.span(),
             Expr::Grouped(e) => e.span(),
         }
     }
@@ -447,6 +456,131 @@ impl ASTNode for LambdaExpr {
 }
 
 /**
+ * Await 表达式
+ * 用于等待异步操作完成并获取结果
+ * 
+ * 语法:
+ * 等待 表达式
+ * 
+ * 示例:
+ * 等待 异步函数()
+ * 等待 future
+ * 等待 获取数据()
+ */
+#[derive(Debug, Clone)]
+pub struct AwaitExpr {
+    /// 要等待的表达式 (通常是异步函数调用或 Future)
+    pub expr: Box<Expr>,
+    /// span 信息
+    pub span: Span,
+}
+
+impl AwaitExpr {
+    /**
+     * 创建新的 Await 表达式
+     */
+    pub fn new(expr: Expr, span: Span) -> Self {
+        Self {
+            expr: Box::new(expr),
+            span,
+        }
+    }
+
+    /**
+     * 获取被等待表达式的类型
+     * 如果表达式类型是 Future<T>，返回 T
+     */
+    pub fn inner_type(&self) -> Type {
+        match self.expr.as_ref() {
+            Expr::Call(call) => call.return_type.clone().unwrap_or(Type::Unknown),
+            _ => Type::Unknown,
+        }
+    }
+}
+
+impl ASTNode for AwaitExpr {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/**
+ * Future 类型
+ * 表示异步操作的最终结果
+ */
+#[derive(Debug, Clone)]
+pub struct FutureType {
+    /// Future 包装的内部类型
+    pub inner_type: Type,
+    /// 是否已完成
+    pub is_completed: bool,
+    /// 结果值 (如果已完成)
+    pub result: Option<Box<Expr>>,
+}
+
+impl FutureType {
+    pub fn new(inner_type: Type) -> Self {
+        Self {
+            inner_type,
+            is_completed: false,
+            result: None,
+        }
+    }
+
+    pub fn completed(result: Expr) -> Self {
+        Self {
+            inner_type: Type::Unknown,
+            is_completed: true,
+            result: Some(Box::new(result)),
+        }
+    }
+}
+
+/**
+ * 异步运行时上下文
+ * 用于跟踪当前是否在异步函数中
+ */
+#[derive(Debug, Clone)]
+pub struct AsyncContext {
+    /// 是否在异步函数中
+    pub in_async_fn: bool,
+    /// 当前挂起的 await 数量
+    pub pending_awaits: usize,
+    /// 当前函数名
+    pub current_function: Option<String>,
+}
+
+impl AsyncContext {
+    pub fn new() -> Self {
+        Self {
+            in_async_fn: false,
+            pending_awaits: 0,
+            current_function: None,
+        }
+    }
+
+    pub fn enter_async_fn(&mut self, fn_name: String) {
+        self.in_async_fn = true;
+        self.current_function = Some(fn_name);
+    }
+
+    pub fn exit_async_fn(&mut self) {
+        self.in_async_fn = false;
+        self.current_function = None;
+    }
+
+    pub fn increment_awaits(&mut self) {
+        self.pending_awaits += 1;
+    }
+
+    pub fn decrement_awaits(&mut self) {
+        if self.pending_awaits > 0 {
+            self.pending_awaits -= 1;
+        }
+    }
+}
+
+/**
  * 语句节点
  */
 #[derive(Debug, Clone)]
@@ -535,6 +669,18 @@ pub enum Stmt {
      * }
      */
     Match(MatchStmt),
+    
+    /**
+     * 异常处理语句
+     * 例如: 尝试 { ... } 捕获 (e: 异常) { ... } 最终 { ... }
+     */
+    Try(TryStmt),
+    
+    /**
+     * 抛出异常语句
+     * 例如: 抛出 异常("错误信息")
+     */
+    Throw(ThrowStmt),
 }
 
 impl ASTNode for Stmt {
@@ -554,6 +700,8 @@ impl ASTNode for Stmt {
             Stmt::TypeAlias(e) => e.span.clone(),
             Stmt::Constant(e) => e.span.clone(),
             Stmt::Match(e) => e.span.clone(),
+            Stmt::Try(e) => e.span.clone(),
+            Stmt::Throw(e) => e.span.clone(),
         }
     }
 }
@@ -837,6 +985,9 @@ pub enum Type {
     /// 函数类型
     /// 例如: 函数(整数) => 整数
     Function(Vec<Type>, Box<Type>),
+    /// Future 类型 (异步操作的结果)
+    /// 例如: Future<整数> 表示返回整数的异步操作
+    Future(Box<Type>),
 }
 
 /**
@@ -955,6 +1106,8 @@ pub struct Function {
     pub return_type: Type,
     pub body: BlockStmt,
     pub span: Span,
+    /// 是否是异步函数
+    pub is_async: bool,
 }
 
 impl Function {
@@ -967,6 +1120,7 @@ impl Function {
             return_type,
             body,
             span,
+            is_async: false,
         }
     }
 
@@ -980,6 +1134,23 @@ impl Function {
             return_type,
             body,
             span,
+            is_async: false,
+        }
+    }
+
+    /**
+     * 创建异步函数
+     */
+    pub fn async_fn(name: String, params: Vec<FunctionParam>, return_type: Type,
+                    body: BlockStmt, span: Span) -> Self {
+        Self {
+            name,
+            type_params: Vec::new(),
+            params,
+            return_type,
+            body,
+            span,
+            is_async: true,
         }
     }
 
@@ -988,6 +1159,13 @@ impl Function {
      */
     pub fn is_generic(&self) -> bool {
         !self.type_params.is_empty()
+    }
+
+    /**
+     * 检查函数是否是异步函数
+     */
+    pub fn is_async_fn(&self) -> bool {
+        self.is_async
     }
 
     /**
@@ -1155,5 +1333,279 @@ pub fn token_to_unary_op(token: &TokenType) -> Option<UnaryOp> {
         TokenType::非 => Some(UnaryOp::Not),
         TokenType::位非 => Some(UnaryOp::BitNot),
         _ => None,
+    }
+}
+
+// ============================================================
+// 异常处理相关定义
+// ============================================================
+
+/**
+ * 异常类型
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExceptionType {
+    /// 通用异常
+    Exception,
+    /// 运行时异常
+    RuntimeError,
+    /// 类型错误
+    TypeError,
+    /// 空值异常
+    NullPointer,
+    /// 索引越界
+    IndexOutOfBounds,
+    /// 除零错误
+    DivideByZero,
+    /// 文件错误
+    FileError,
+    /// 网络错误
+    NetworkError,
+    /// 自定义异常类型
+    Custom(String),
+}
+
+impl std::fmt::Display for ExceptionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExceptionType::Exception => write!(f, "异常"),
+            ExceptionType::RuntimeError => write!(f, "运行时错误"),
+            ExceptionType::TypeError => write!(f, "类型错误"),
+            ExceptionType::NullPointer => write!(f, "空指针异常"),
+            ExceptionType::IndexOutOfBounds => write!(f, "索引越界"),
+            ExceptionType::DivideByZero => write!(f, "除零错误"),
+            ExceptionType::FileError => write!(f, "文件错误"),
+            ExceptionType::NetworkError => write!(f, "网络错误"),
+            ExceptionType::Custom(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+/**
+ * Catch 子句
+ * 例如: 捕获 (e: 异常) { 处理代码 }
+ */
+#[derive(Debug, Clone)]
+pub struct CatchClause {
+    /// 捕获的异常变量名
+    pub var_name: String,
+    /// 异常类型 (可选，不指定则捕获所有异常)
+    pub exception_type: Option<ExceptionType>,
+    /// 异常处理代码块
+    pub body: BlockStmt,
+    /// span 信息
+    pub span: Span,
+}
+
+impl CatchClause {
+    pub fn new(var_name: String, exception_type: Option<ExceptionType>, body: BlockStmt, span: Span) -> Self {
+        Self { var_name, exception_type, body, span }
+    }
+
+    /**
+     * 检查是否捕获所有异常
+     */
+    pub fn catches_all(&self) -> bool {
+        self.exception_type.is_none()
+    }
+}
+
+/**
+ * Try 语句 (异常处理)
+ * 
+ * 语法:
+ * ```
+ * 尝试 {
+ *     // 可能抛出异常的代码
+ * } 捕获 (e: 异常) {
+ *     // 异常处理代码
+ * } 最终 {
+ *     // 无论是否发生异常都会执行的代码
+ * }
+ * ```
+ * 
+ * 示例:
+ * ```
+ * 尝试 {
+ *     定义 结果 = 除法(10, 0)
+ *     打印(结果)
+ * } 捕获 (e: 除零错误) {
+ *     打印("除零错误: " + e.信息)
+ * } 最终 {
+ *     打印("清理资源")
+ * }
+ * ```
+ */
+#[derive(Debug, Clone)]
+pub struct TryStmt {
+    /// try 代码块
+    pub try_block: BlockStmt,
+    /// catch 子句列表 (可以有多个，按顺序匹配)
+    pub catch_clauses: Vec<CatchClause>,
+    /// finally 代码块 (可选)
+    pub finally_block: Option<BlockStmt>,
+    /// span 信息
+    pub span: Span,
+}
+
+impl TryStmt {
+    pub fn new(
+        try_block: BlockStmt,
+        catch_clauses: Vec<CatchClause>,
+        finally_block: Option<BlockStmt>,
+        span: Span,
+    ) -> Self {
+        Self { try_block, catch_clauses, finally_block, span }
+    }
+
+    /**
+     * 检查是否有 catch 子句
+     */
+    pub fn has_catch(&self) -> bool {
+        !self.catch_clauses.is_empty()
+    }
+
+    /**
+     * 检查是否有 finally 子句
+     */
+    pub fn has_finally(&self) -> bool {
+        self.finally_block.is_some()
+    }
+
+    /**
+     * 获取匹配指定异常类型的 catch 子句
+     */
+    pub fn get_matching_catch(&self, exception_type: &ExceptionType) -> Option<&CatchClause> {
+        // 首先查找精确匹配
+        for clause in &self.catch_clauses {
+            if let Some(ref et) = clause.exception_type {
+                if et == exception_type {
+                    return Some(clause);
+                }
+            }
+        }
+        // 然后查找捕获所有的子句
+        for clause in &self.catch_clauses {
+            if clause.catches_all() {
+                return Some(clause);
+            }
+        }
+        None
+    }
+}
+
+/**
+ * Throw 语句 (抛出异常)
+ * 
+ * 语法:
+ * ```
+ * 抛出 异常类型("错误信息")
+ * 抛出 变量名
+ * ```
+ * 
+ * 示例:
+ * ```
+ * 若 年龄 < 0 {
+ *     抛出 异常("年龄不能为负数")
+ * }
+ * 
+ * 若 文件.不存在() {
+ *     抛出 文件错误("文件不存在: " + 路径)
+ * }
+ * ```
+ */
+#[derive(Debug, Clone)]
+pub struct ThrowStmt {
+    /// 要抛出的异常表达式
+    /// 可以是异常构造调用，也可以是异常变量
+    pub exception: Expr,
+    /// span 信息
+    pub span: Span,
+}
+
+impl ThrowStmt {
+    pub fn new(exception: Expr, span: Span) -> Self {
+        Self { exception, span }
+    }
+}
+
+/**
+ * 异常信息结构体
+ * 用于运行时存储异常详情
+ */
+#[derive(Debug, Clone)]
+pub struct ExceptionInfo {
+    /// 异常类型
+    pub exception_type: ExceptionType,
+    /// 错误信息
+    pub message: String,
+    /// 堆栈跟踪
+    pub stack_trace: Vec<StackFrame>,
+    /// 抛出位置
+    pub source_location: Option<SourceLocation>,
+}
+
+/**
+ * 堆栈帧
+ */
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    /// 函数名
+    pub function_name: String,
+    /// 文件名
+    pub file_name: Option<String>,
+    /// 行号
+    pub line: usize,
+    /// 列号
+    pub column: usize,
+}
+
+/**
+ * 源码位置
+ */
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl ExceptionInfo {
+    pub fn new(exception_type: ExceptionType, message: String) -> Self {
+        Self {
+            exception_type,
+            message,
+            stack_trace: Vec::new(),
+            source_location: None,
+        }
+    }
+
+    /**
+     * 添加堆栈帧
+     */
+    pub fn add_stack_frame(&mut self, frame: StackFrame) {
+        self.stack_trace.push(frame);
+    }
+
+    /**
+     * 格式化堆栈跟踪
+     */
+    pub fn format_stack_trace(&self) -> String {
+        let mut result = String::new();
+        result.push_str(&format!("{}: {}\n", self.exception_type, self.message));
+        
+        if let Some(ref loc) = self.source_location {
+            result.push_str(&format!("  位于 {}:{}:{}\n", loc.file, loc.line, loc.column));
+        }
+        
+        for frame in &self.stack_trace {
+            result.push_str(&format!("  在 {}", frame.function_name));
+            if let Some(ref file) = frame.file_name {
+                result.push_str(&format!(" ({}:{}:{})", file, frame.line, frame.column));
+            }
+            result.push('\n');
+        }
+        
+        result
     }
 }

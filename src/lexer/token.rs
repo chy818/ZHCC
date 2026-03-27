@@ -24,8 +24,6 @@ pub enum Keyword {
     则,           // then (CCAS 特色)
     否则,         // else
     否则若,       // else if / elif
-    或,           // || (逻辑或关键字)
-    且,           // && (逻辑与关键字)
     当,           // while
     直到,         // until (do-while 后置条件)
     循环,         // loop / for 通用入口
@@ -337,8 +335,6 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("列表", Keyword::列表);
     map.insert("或许", Keyword::或许);
     map.insert("如果", Keyword::如果);
-    map.insert("或", Keyword::或);
-    map.insert("且", Keyword::且);
 
     // ========== 数据类型 (英文别名) ==========
     map.insert("int", Keyword::整数);

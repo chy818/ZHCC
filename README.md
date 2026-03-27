@@ -326,7 +326,7 @@ fn add(int a, int b) -> int {
 
 // 中英文混用（也是允许的）
 fn multiply(int x, int y) 返回 整数 {
-    若 x == 0 或 y == 0 则 {
+    若 x == 0 || y == 0 则 {
         返回 0
     }
     return x * y

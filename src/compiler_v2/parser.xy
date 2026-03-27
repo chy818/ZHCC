@@ -366,7 +366,7 @@
     tok = parserPeekToken(p)
 
     /* 一元运算符 */
-    若 tok.值 == "!" 或 tok.值 == "-" 则 {
+    若 tok.值 == "!" || tok.值 == "-" 则 {
         定义 op: 文本
         op = tok.值
         parserConsume(p)
@@ -383,12 +383,12 @@
 
 /* 获取运算符优先级 */
 函数 getOpPriority(op: 文本): 整数 {
-    若 op == "或" 则 { 返回 1 }
-    若 op == "且" 则 { 返回 2 }
-    若 op == "==" 或 op == "!=" 则 { 返回 3 }
-    若 op == "<" 或 op == ">" 或 op == "<=" 或 op == ">=" 则 { 返回 4 }
-    若 op == "+" 或 op == "-" 则 { 返回 5 }
-    若 op == "*" 或 op == "/" 或 op == "%" 则 { 返回 6 }
+    若 op == "||" 则 { 返回 1 }
+    若 op == "&&" 则 { 返回 2 }
+    若 op == "==" || op == "!=" 则 { 返回 3 }
+    若 op == "<" || op == ">" || op == "<=" || op == ">=" 则 { 返回 4 }
+    若 op == "+" || op == "-" 则 { 返回 5 }
+    若 op == "*" || op == "/" || op == "%" 则 { 返回 6 }
     返回 0
 }
 
@@ -409,7 +409,7 @@
     定义 priority: 整数
     priority = getOpPriority(tok.值)
 
-    当 priority >= minPriority 且 priority > 0 则 {
+    当 priority >= minPriority && priority > 0 则 {
         定义 op: 文本
         op = tok.值
         parserConsume(p)
@@ -438,10 +438,10 @@
 
 /* 是二元运算符 */
 函数 isBinaryOp(text: 文本): 整数 {
-    若 text == "+" 或 text == "-" 或 text == "*" 或 text == "/" 则 { 返回 1 }
-    若 text == "%" 或 text == "==" 或 text == "!=" 则 { 返回 1 }
-    若 text == "<" 或 text == ">" 或 text == "<=" 或 text == ">=" 则 { 返回 1 }
-    若 text == "且" 或 text == "或" 则 { 返回 1 }
+    若 text == "+" || text == "-" || text == "*" || text == "/" 则 { 返回 1 }
+    若 text == "%" || text == "==" || text == "!=" 则 { 返回 1 }
+    若 text == "<" || text == ">" || text == "<=" || text == ">=" 则 { 返回 1 }
+    若 text == "&&" || text == "||" 则 { 返回 1 }
     返回 0
 }
 
@@ -513,7 +513,7 @@
     定义 tok: Token
     tok = parserPeekToken(p)
 
-    当 tok.值 == "(" 或 tok.值 == "[" 或 tok.值 == "." 则 {
+    当 tok.值 == "(" || tok.值 == "[" || tok.值 == "." 则 {
         若 tok.值 == "(" 则 {
             node = parseCall(p, node)
         } 否则 {
@@ -753,7 +753,7 @@
 
     /* 循环解析语句 */
     tok = parserPeekToken(p)
-    当 tok.值 != "}" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         定义 stmt: AST节点
 
         若 tok.值 == "定义" 则 {
@@ -991,7 +991,7 @@
 
     /* 解析分支 */
     tok = parserPeekToken(p)
-    当 tok.值 != "}" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         定义 branchNode: AST节点
 
         /* 检查是否是 default 分支 */
@@ -1091,7 +1091,7 @@
 
     /* 解析字段列表 */
     tok = parserPeekToken(p)
-    当 tok.值 != "}" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         /* 获取字段名 */
         若 tok.类型 == 0 则 {
             定义 fieldNode: AST节点
@@ -1198,7 +1198,7 @@
 
     /* 解析模块内容（函数定义列表） */
     tok = parserPeekToken(p)
-    当 tok.值 != "}" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         若 tok.值 == "函数" 则 {
             定义 funcNode: AST节点
             funcNode = parseFunction(p)
@@ -1256,7 +1256,7 @@
 
     /* 解析成员列表 */
     tok = parserPeekToken(p)
-    当 tok.值 != "}" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         若 tok.类型 == 0 则 {
             定义 memberNode: AST节点
             memberNode = parserCreateNode(24, tok.值, "", tok.行号)  // 枚举成员
@@ -1313,7 +1313,7 @@
 
     /* 解析参数列表 (简化) */
     tok = parserPeekToken(p)
-    当 tok.值 != ")" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != ")" && tok.值 != "" && tok.类型 != 6 则 {
         /* 解析参数名 */
         若 tok.类型 == 0 则 {
             parserConsume(p)
@@ -1402,7 +1402,7 @@
     定义 tok: Token
     tok = parserPeekToken(p)
 
-    当 tok.值 != target 且 tok.类型 != 6 且 tok.值 != "" 则 {
+    当 tok.值 != target && tok.类型 != 6 && tok.值 != "" 则 {
         parserConsume(p)
         tok = parserPeekToken(p)
     }
@@ -1420,7 +1420,7 @@
     定义 tok: Token
     tok = parserPeekToken(p)
 
-    当 tok.类型 != 类型 且 tok.类型 != 6 且 tok.值 != "" 则 {
+    当 tok.类型 != 类型 && tok.类型 != 6 && tok.值 != "" 则 {
         parserConsume(p)
         tok = parserPeekToken(p)
     }
@@ -1438,7 +1438,7 @@
     定义 tok: Token
     tok = parserPeekToken(p)
 
-    当 tok.值 != "函数" 且 tok.类型 != 6 且 tok.值 != "" 则 {
+    当 tok.值 != "函数" && tok.类型 != 6 && tok.值 != "" 则 {
         parserConsume(p)
         tok = parserPeekToken(p)
     }
@@ -1560,7 +1560,7 @@
 
     /* 解析参数 */
     tok = parserPeekToken(p)
-    当 tok.值 != ")" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+    当 tok.值 != ")" && tok.值 != "" && tok.类型 != 6 则 {
         /* 获取参数名 */
         若 tok.类型 == 0 则 {
             定义 paramNode: AST节点
@@ -1626,7 +1626,7 @@
         若 tok.值 == "(" 则 {
             parserConsume(p)
             tok = parserPeekToken(p)
-            当 tok.值 != ")" 且 tok.值 != "" 则 {
+            当 tok.值 != ")" && tok.值 != "" 则 {
                 parserConsume(p)
                 tok = parserPeekToken(p)
             }
@@ -1654,7 +1654,7 @@
         parserConsume(p)
         /* 解析约束条件 */
         tok = parserPeekToken(p)
-        当 tok.值 != "{" 且 tok.值 != "" 且 tok.类型 != 6 则 {
+        当 tok.值 != "{" && tok.值 != "" && tok.类型 != 6 则 {
             parserConsume(p)
             tok = parserPeekToken(p)
         }
@@ -1716,7 +1716,7 @@
     定义 recovery: ErrorRecovery
     recovery = parser创建错误恢复()
 
-    当 p.当前位置 < p.源码长度 且 recovery.已恢复 == 0 则 {
+    当 p.当前位置 < p.源码长度 && recovery.已恢复 == 0 则 {
         定义 tok: Token
         tok = parserPeekToken(p)
 
@@ -1797,7 +1797,7 @@
         定义 tok: Token
         tok = parserPeekToken(p)
 
-        若 tok.值 == "函数" 且 depth == 0 则 {
+        若 tok.值 == "函数" && depth == 0 则 {
             返回 p
         }
 
@@ -1930,7 +1930,7 @@
     tok = parserPeekToken(p)
 
     /* 循环解析直到文件结束 */
-    当 tok.类型 != 6 且 tok.值 != "" 且 funcCount < 100 则 {
+    当 tok.类型 != 6 && tok.值 != "" && funcCount < 100 则 {
         若 tok.值 == "函数" 则 {
             定义 funcNode: AST节点
             funcNode = parseFunction(p)

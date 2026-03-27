@@ -58,6 +58,11 @@ fn main() {
             "--ir" => {
                 run_mode = RunMode::IrOnly;
             }
+            "repl" | "--repl" | "-i" => {
+                // 启动 REPL 模式
+                xuanyu::start_repl(None);
+                return;
+            }
             _ => {
                 if i > 0 && !arg.starts_with('-') && input_file.is_empty() {
                     input_file = arg.clone();
@@ -369,6 +374,10 @@ fn print_usage(program: &str) {
     println!("CCAS 玄语编译器 (xuanyu) v0.1.0");
     println!();
     println!("用法: {} <源文件> [选项]", program);
+    println!("      {} repl [选项]", program);
+    println!();
+    println!("命令:");
+    println!("  repl, --repl, -i    启动交互式 REPL 环境");
     println!();
     println!("选项:");
     println!("  -h, --help    显示此帮助信息");
@@ -380,4 +389,5 @@ fn print_usage(program: &str) {
     println!("  {} hello.xy          只生成 IR", program);
     println!("  {} hello.xy --build  生成可执行文件", program);
     println!("  {} hello.xy --run    编译并运行", program);
+    println!("  {} repl              启动交互式环境", program);
 }
