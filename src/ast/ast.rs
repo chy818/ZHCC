@@ -262,16 +262,28 @@ pub struct CallExpr {
     pub function: Box<Expr>,
     pub arguments: Vec<Expr>,
     pub return_type: Option<Type>,  // 函数返回类型
+    pub type_args: Vec<Type>,      // 泛型类型参数
     pub span: Span,
 }
 
 impl CallExpr {
     pub fn new(function: Box<Expr>, arguments: Vec<Expr>, span: Span) -> Self {
-        Self { 
-            function, 
-            arguments, 
+        Self {
+            function,
+            arguments,
             return_type: None,
-            span 
+            type_args: Vec::new(),
+            span,
+        }
+    }
+
+    pub fn new_with_type_args(function: Box<Expr>, arguments: Vec<Expr>, type_args: Vec<Type>, span: Span) -> Self {
+        Self {
+            function,
+            arguments,
+            return_type: None,
+            type_args,
+            span,
         }
     }
 }
@@ -412,6 +424,16 @@ impl LambdaExpr {
             params,
             body,
             return_type: None,
+            captured_vars: Vec::new(),
+            span,
+        }
+    }
+
+    pub fn new_with_return_type(params: Vec<FunctionParam>, body: Box<Expr>, return_type: Option<Type>, span: Span) -> Self {
+        Self {
+            params,
+            body,
+            return_type,
             captured_vars: Vec::new(),
             span,
         }
@@ -560,18 +582,21 @@ impl ASTNode for ExprStmt {
 /**
  * 变量声明语句
  * 例如: 定义 用户名: 文本 = "你好"
+ * 例如: 定义 可变 计数: 整数 = 0
  */
 #[derive(Debug, Clone)]
 pub struct LetStmt {
     pub name: String,
     pub type_annotation: Option<Type>,
     pub initializer: Option<Expr>,
+    /// 是否可变变量（使用 可变 关键字修饰）
+    pub is_mutable: bool,
     pub span: Span,
 }
 
 impl LetStmt {
-    pub fn new(name: String, type_annotation: Option<Type>, initializer: Option<Expr>, span: Span) -> Self {
-        Self { name, type_annotation, initializer, span }
+    pub fn new(name: String, type_annotation: Option<Type>, initializer: Option<Expr>, is_mutable: bool, span: Span) -> Self {
+        Self { name, type_annotation, initializer, is_mutable, span }
     }
 }
 
@@ -809,6 +834,9 @@ pub enum Type {
     /// 例如: 函数 foo<T>(x: T) => x
     /// T 就是 TypeVar("T")
     TypeVar(String),
+    /// 函数类型
+    /// 例如: 函数(整数) => 整数
+    Function(Vec<Type>, Box<Type>),
 }
 
 /**
@@ -879,11 +907,50 @@ pub struct FunctionParam {
 }
 
 /**
+ * 类型参数定义
+ * 例如: 函数 foo<T, U>(...) 中的 T 和 U
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    /// 类型参数名称
+    pub name: String,
+    /// 上界约束（可选），默认为 Any
+    pub bound: Option<Type>,
+}
+
+impl TypeParam {
+    pub fn new(name: String) -> Self {
+        Self { name, bound: None }
+    }
+
+    pub fn with_bound(name: String, bound: Type) -> Self {
+        Self { name: name, bound: Some(bound) }
+    }
+}
+
+/**
+ * 类型约束
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeConstraint {
+    /// 可加法约束 T: Add
+    Add,
+    /// 可比较约束 T: Comparable
+    Comparable,
+    /// 可复制约束 T: Copy
+    Copy,
+    /// 可显示约束 T: Display
+    Display,
+}
+
+/**
  * 函数定义
  */
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    /// 泛型类型参数列表，例如 <T, U>
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<FunctionParam>,
     pub return_type: Type,
     pub body: BlockStmt,
@@ -891,9 +958,43 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new(name: String, params: Vec<FunctionParam>, return_type: Type, 
+    pub fn new(name: String, params: Vec<FunctionParam>, return_type: Type,
                body: BlockStmt, span: Span) -> Self {
-        Self { name, params, return_type, body, span }
+        Self {
+            name,
+            type_params: Vec::new(),
+            params,
+            return_type,
+            body,
+            span,
+        }
+    }
+
+    pub fn with_type_params(name: String, type_params: Vec<TypeParam>,
+                           params: Vec<FunctionParam>, return_type: Type,
+                           body: BlockStmt, span: Span) -> Self {
+        Self {
+            name,
+            type_params,
+            params,
+            return_type,
+            body,
+            span,
+        }
+    }
+
+    /**
+     * 检查函数是否是泛型函数
+     */
+    pub fn is_generic(&self) -> bool {
+        !self.type_params.is_empty()
+    }
+
+    /**
+     * 检查给定的类型是否是类型变量
+     */
+    pub fn is_type_var(&self, type_name: &str) -> bool {
+        self.type_params.iter().any(|tp| tp.name == type_name)
     }
 }
 

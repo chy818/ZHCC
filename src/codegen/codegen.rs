@@ -44,6 +44,7 @@ fn type_to_llvm(ty: &Type) -> &'static str {
         Type::Struct(_) => "i64",  // 结构体实例存储为 i64（指针值）
         Type::Unknown => "i64",     // 未知类型暂时用 i64 代替
         Type::TypeVar(_) => "i64",  // 类型变量暂时用 i64 代替
+        Type::Function(_, _) => "i8*",  // 函数类型用指针（闭包结构体指针）
         Type::Custom(name) => {
             match name.as_str() {
                 _ => "i64",
@@ -55,6 +56,7 @@ fn type_to_llvm(ty: &Type) -> &'static str {
 /**
  * 代码生成器
  */
+#[allow(dead_code)]
 pub struct CodeGenerator {
     ir_output: String,
     indent: usize,
@@ -77,8 +79,35 @@ pub struct CodeGenerator {
     entry_label: Option<String>,
     /// 是否处于尾调用位置
     in_tail_position: bool,
+    /// 泛型函数特化缓存：key = "函数名:类型1,类型2,..." value = 特化函数名
+    specialization_cache: std::collections::HashMap<String, String>,
+    /// 泛型函数定义存储：函数名 -> 函数定义
+    generic_functions: std::collections::HashMap<String, Function>,
+    /// 全局函数定义（用于 lambda 函数）
+    global_functions: Vec<String>,
+    /// 需要销毁的闭包变量列表
+    closure_vars: Vec<String>,
+    /// 循环上下文栈（用于 break/continue）
+    loop_context_stack: Vec<LoopContext>,
 }
 
+/**
+ * 循环上下文
+ * 用于 break/continue 语句的目标跳转
+ */
+#[derive(Debug, Clone)]
+struct LoopContext {
+    /// 循环开始标签（条件判断入口）
+    loop_start: String,
+    /// 循环体入口标签
+    loop_body: String,
+    /// continue 跳转目标（循环末尾，跳回条件判断前）
+    loop_continue: String,
+    /// 循环结束标签
+    loop_end: String,
+}
+
+#[allow(dead_code)]
 impl CodeGenerator {
     pub fn new() -> Self {
         Self {
@@ -94,6 +123,269 @@ impl CodeGenerator {
             current_function_params: Vec::new(),
             entry_label: None,
             in_tail_position: false,
+            specialization_cache: std::collections::HashMap::new(),
+            generic_functions: std::collections::HashMap::new(),
+            global_functions: Vec::new(),
+            closure_vars: Vec::new(),
+            loop_context_stack: Vec::new(),
+        }
+    }
+
+    /**
+     * 生成泛型函数特化名称
+     * 例如: swap<i64> -> "swap_i64"
+     */
+    fn make_specialization_name(&self, func_name: &str, type_args: &[String]) -> String {
+        if type_args.is_empty() {
+            func_name.to_string()
+        } else {
+            format!("{}_{}", func_name, type_args.join("_"))
+        }
+    }
+
+    /**
+     * 获取或创建特化函数
+     * 返回特化后的 LLVM 函数引用名
+     */
+    fn get_or_create_specialization(
+        &mut self,
+        func_name: &str,
+        type_args: &[String],
+    ) -> Result<String, CodegenError> {
+        let cache_key = format!("{}:{}", func_name, type_args.join(","));
+        if let Some(cached) = self.specialization_cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
+        // 获取泛型函数定义
+        let generic_func = match self.generic_functions.get(func_name) {
+            Some(f) => f,
+            None => return Ok(func_name.to_string()),
+        };
+
+        // 构建类型替换映射
+        let mut type_subst = std::collections::HashMap::new();
+        for (i, type_arg) in type_args.iter().enumerate() {
+            if i < generic_func.type_params.len() {
+                let param_name = &generic_func.type_params[i].name;
+                let concrete_type = self.parse_type_string(type_arg);
+                type_subst.insert(param_name.clone(), concrete_type);
+            }
+        }
+
+        // 创建特化函数
+        let spec_func = self.create_specialized_function(generic_func, &type_subst, type_args);
+
+        // 生成特化函数的 IR
+        self.generate_function(&spec_func)?;
+
+        let spec_name = self.make_specialization_name(func_name, type_args);
+        self.specialization_cache.insert(cache_key, spec_name.clone());
+        Ok(spec_name)
+    }
+
+    /**
+     * 解析类型字符串为 Type 枚举
+     */
+    fn parse_type_string(&self, type_str: &str) -> Type {
+        match type_str {
+            "i64" | "int" | "整数" => Type::Int,
+            "i32" | "long" | "长整数" => Type::Long,
+            "double" | "float" | "浮点数" => Type::Float,
+            "f64" | "双精度" => Type::Double,
+            "i1" | "bool" | "布尔" => Type::Bool,
+            "i8*" | "string" | "文本" => Type::String,
+            "i8" | "char" | "字符" => Type::Char,
+            "void" | "无返回" => Type::Void,
+            _ => Type::Custom(type_str.to_string()),
+        }
+    }
+
+    /**
+     * 创建特化函数（带类型替换）
+     */
+    fn create_specialized_function(
+        &self,
+        generic_func: &Function,
+        type_subst: &std::collections::HashMap<String, Type>,
+        type_args: &[String],
+    ) -> Function {
+        // 替换函数参数类型
+        let specialized_params: Vec<FunctionParam> = generic_func.params
+            .iter()
+            .map(|param| {
+                let new_type = self.substitute_type(&param.param_type, type_subst);
+                FunctionParam {
+                    name: param.name.clone(),
+                    param_type: new_type,
+                }
+            })
+            .collect();
+
+        // 替换返回类型
+        let specialized_return_type = self.substitute_type(&generic_func.return_type, type_subst);
+
+        // 替换函数体中的类型
+        let specialized_body = self.substitute_block_stmt(&generic_func.body, type_subst);
+
+        Function {
+            name: format!("{}_{}", generic_func.name, type_args.join("_")),
+            type_params: Vec::new(), // 特化函数没有类型参数
+            params: specialized_params,
+            return_type: specialized_return_type,
+            body: specialized_body,
+            span: generic_func.span.clone(),
+        }
+    }
+
+    /**
+     * 替换类型中的类型变量
+     */
+    fn substitute_type(&self, type_hint: &Type, type_subst: &std::collections::HashMap<String, Type>) -> Type {
+        match type_hint {
+            Type::TypeVar(name) => {
+                type_subst.get(name).cloned().unwrap_or_else(|| type_hint.clone())
+            }
+            Type::List(elem) => {
+                Type::List(Box::new(self.substitute_type(elem, type_subst)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type(inner, type_subst)))
+            }
+            Type::Array(elem) => {
+                Type::Array(Box::new(self.substitute_type(elem, type_subst)))
+            }
+            Type::Function(param_types, return_type) => {
+                let subst_params: Vec<Type> = param_types.iter()
+                    .map(|t| self.substitute_type(t, type_subst))
+                    .collect();
+                let subst_return = Box::new(self.substitute_type(return_type, type_subst));
+                Type::Function(subst_params, subst_return)
+            }
+            _ => type_hint.clone(),
+        }
+    }
+
+    /**
+     * 替换 FunctionParam 中的类型
+     */
+    fn substitute_function_param(&self, param: &FunctionParam, type_subst: &std::collections::HashMap<String, Type>) -> FunctionParam {
+        FunctionParam {
+            name: param.name.clone(),
+            param_type: self.substitute_type(&param.param_type, type_subst),
+        }
+    }
+
+    /**
+     * 替换块语句中的类型变量
+     * 递归遍历语句，替换 LetStmt 和其他语句中的类型注解
+     */
+    fn substitute_block_stmt(&self, block: &BlockStmt, type_subst: &std::collections::HashMap<String, Type>) -> BlockStmt {
+        let mut new_statements = Vec::new();
+        for stmt in &block.statements {
+            new_statements.push(self.substitute_stmt(stmt, type_subst));
+        }
+        BlockStmt {
+            statements: new_statements,
+            span: block.span.clone(),
+        }
+    }
+
+    /**
+     * 替换语句中的类型变量
+     */
+    fn substitute_stmt(&self, stmt: &Stmt, type_subst: &std::collections::HashMap<String, Type>) -> Stmt {
+        match stmt {
+            Stmt::Let(let_stmt) => {
+                Stmt::Let(crate::ast::LetStmt {
+                    name: let_stmt.name.clone(),
+                    type_annotation: let_stmt.type_annotation.as_ref().map(|t| self.substitute_type(t, type_subst)),
+                    initializer: let_stmt.initializer.as_ref().map(|e| self.substitute_expr(e, type_subst)),
+                    is_mutable: let_stmt.is_mutable,
+                    span: let_stmt.span.clone(),
+                })
+            }
+            Stmt::Assignment(assign_stmt) => {
+                Stmt::Assignment(crate::ast::AssignmentStmt {
+                    target: self.substitute_expr(&assign_stmt.target, type_subst),
+                    value: self.substitute_expr(&assign_stmt.value, type_subst),
+                    span: assign_stmt.span.clone(),
+                })
+            }
+            Stmt::If(if_stmt) => {
+                let mut new_branches = Vec::new();
+                for branch in &if_stmt.branches {
+                    new_branches.push(crate::ast::Branch {
+                        condition: self.substitute_expr(&branch.condition, type_subst),
+                        body: Box::new(self.substitute_stmt(&branch.body, type_subst)),
+                    });
+                }
+                Stmt::If(crate::ast::IfStmt {
+                    branches: new_branches,
+                    else_branch: if_stmt.else_branch.as_ref().map(|b| Box::new(self.substitute_stmt(b, type_subst))),
+                    span: if_stmt.span.clone(),
+                })
+            }
+            Stmt::Loop(loop_stmt) => {
+                Stmt::Loop(crate::ast::LoopStmt {
+                    kind: loop_stmt.kind.clone(),
+                    condition: loop_stmt.condition.as_ref().map(|e| self.substitute_expr(e, type_subst)),
+                    counter: loop_stmt.counter.clone(),
+                    iterator: loop_stmt.iterator.as_ref().map(|e| self.substitute_expr(e, type_subst)),
+                    body: Box::new(self.substitute_stmt(&loop_stmt.body, type_subst)),
+                    span: loop_stmt.span.clone(),
+                })
+            }
+            Stmt::Return(return_stmt) => {
+                Stmt::Return(crate::ast::ReturnStmt {
+                    value: return_stmt.value.as_ref().map(|e| self.substitute_expr(e, type_subst)),
+                    span: return_stmt.span.clone(),
+                })
+            }
+            Stmt::Expr(expr_stmt) => {
+                Stmt::Expr(crate::ast::ExprStmt {
+                    expr: self.substitute_expr(&expr_stmt.expr, type_subst),
+                    span: expr_stmt.span.clone(),
+                })
+            }
+            Stmt::Block(block_stmt) => {
+                Stmt::Block(crate::ast::BlockStmt {
+                    statements: block_stmt.statements.iter().map(|s| self.substitute_stmt(s, type_subst)).collect(),
+                    span: block_stmt.span.clone(),
+                })
+            }
+            _ => stmt.clone(),
+        }
+    }
+
+    /**
+     * 替换表达式中的类型变量
+     */
+    fn substitute_expr(&self, expr: &Expr, type_subst: &std::collections::HashMap<String, Type>) -> Expr {
+        match expr {
+            Expr::Lambda(lambda_expr) => {
+                let mut new_params = Vec::new();
+                for param in &lambda_expr.params {
+                    new_params.push(self.substitute_function_param(param, type_subst));
+                }
+                Expr::Lambda(crate::ast::LambdaExpr {
+                    params: new_params,
+                    body: Box::new(self.substitute_expr(&lambda_expr.body, type_subst)),
+                    return_type: lambda_expr.return_type.as_ref().map(|t| self.substitute_type(t, type_subst)),
+                    captured_vars: lambda_expr.captured_vars.clone(),
+                    span: lambda_expr.span.clone(),
+                })
+            }
+            Expr::Call(call_expr) => {
+                Expr::Call(crate::ast::CallExpr {
+                    function: Box::new(self.substitute_expr(&call_expr.function, type_subst)),
+                    arguments: call_expr.arguments.iter().map(|e| self.substitute_expr(e, type_subst)).collect(),
+                    return_type: call_expr.return_type.as_ref().map(|t| self.substitute_type(t, type_subst)),
+                    type_args: call_expr.type_args.iter().map(|t| self.substitute_type(t, type_subst)).collect(),
+                    span: call_expr.span.clone(),
+                })
+            }
+            _ => expr.clone(),
         }
     }
 
@@ -228,6 +520,170 @@ impl CodeGenerator {
         let label = format!("{}.{}", prefix, self.label_counter);
         self.label_counter += 1;
         label
+    }
+
+    fn new_label_nocount(&mut self) -> usize {
+        let id = self.label_counter;
+        self.label_counter += 1;
+        id
+    }
+
+    /**
+     * 收集 lambda 表达式中需要捕获的变量
+     * 在代码生成时重新收集，因为语义分析修改的 AST 没有传递过来
+     */
+    fn collect_captured_vars(&self, body: &Expr, param_names: &[String]) -> Vec<crate::ast::CapturedVar> {
+        let mut captured = Vec::new();
+        self.collect_captured_vars_recursive(body, param_names, &mut captured);
+        captured
+    }
+
+    fn collect_captured_vars_recursive(
+        &self,
+        expr: &Expr,
+        param_names: &[String],
+        captured: &mut Vec<crate::ast::CapturedVar>,
+    ) {
+        match expr {
+            Expr::Identifier(ident) => {
+                // 检查是否是 lambda 参数
+                if !param_names.contains(&ident.name) {
+                    // 检查变量是否存在于当前作用域的变量表中
+                    if self.variables.contains_key(&ident.name) {
+                        // 检查是否已经捕获
+                        if !captured.iter().any(|v| v.name == ident.name) {
+                            // 获取变量类型
+                            let var_type = self.variable_types.get(&ident.name)
+                                .map(|_t| crate::ast::Type::Int) // 简化处理
+                                .unwrap_or(crate::ast::Type::Int);
+                            captured.push(crate::ast::CapturedVar {
+                                name: ident.name.clone(),
+                                var_type,
+                            });
+                        }
+                    }
+                }
+            }
+            Expr::Binary(binary) => {
+                self.collect_captured_vars_recursive(&binary.left, param_names, captured);
+                self.collect_captured_vars_recursive(&binary.right, param_names, captured);
+            }
+            Expr::Unary(unary) => {
+                self.collect_captured_vars_recursive(&unary.operand, param_names, captured);
+            }
+            Expr::Call(call) => {
+                self.collect_captured_vars_recursive(&call.function, param_names, captured);
+                for arg in &call.arguments {
+                    self.collect_captured_vars_recursive(arg, param_names, captured);
+                }
+            }
+            Expr::Lambda(lambda) => {
+                // 嵌套 lambda：参数不能被外层捕获
+                let mut inner_param_names = param_names.to_vec();
+                for param in &lambda.params {
+                    inner_param_names.push(param.name.clone());
+                }
+                self.collect_captured_vars_recursive(&lambda.body, &inner_param_names, captured);
+            }
+            _ => {}
+        }
+    }
+
+    /**
+     * 为 lambda 函数体生成代码
+     * 使用局部变量映射来解析变量引用
+     * 返回 (lambda_body_ir, result_ssa_name)
+     */
+    fn generate_lambda_body(
+        &mut self,
+        body: &Expr,
+        local_vars: &std::collections::HashMap<String, String>,
+        local_types: &std::collections::HashMap<String, String>,
+    ) -> Result<(String, String), &'static str> {
+        let mut lambda_ir = String::new();
+        let result = self.generate_expr_with_locals(body, local_vars, local_types, &mut lambda_ir)?;
+        Ok((lambda_ir, result))
+    }
+
+    /**
+     * 带局部变量映射的表达式生成（简化版，只支持整数运算）
+     */
+    fn generate_expr_with_locals(
+        &mut self,
+        expr: &Expr,
+        local_vars: &std::collections::HashMap<String, String>,
+        local_types: &std::collections::HashMap<String, String>,
+        lambda_ir: &mut String,
+    ) -> Result<String, &'static str> {
+        match expr {
+            Expr::Literal(lit) => {
+                let result = self.new_label("lit");
+                match &lit.kind {
+                    crate::ast::LiteralKind::Integer(n) => {
+                        lambda_ir.push_str(&format!("%{} = add i64 0, {}\n", result, n));
+                    }
+                    crate::ast::LiteralKind::Float(f) => {
+                        lambda_ir.push_str(&format!("%{} = fadd double 0.0, {}\n", result, f));
+                    }
+                    crate::ast::LiteralKind::String(_) => {
+                        lambda_ir.push_str(&format!("%{} = add i64 0, 0\n", result));
+                    }
+                    _ => {
+                        lambda_ir.push_str(&format!("%{} = add i64 0, 0\n", result));
+                    }
+                }
+                Ok(result)
+            }
+            Expr::Identifier(ident) => {
+                let name = self.translate_func_name(&ident.name);
+                if let Some(alloca) = local_vars.get(&name) {
+                    let var_type = local_types.get(&name).cloned().unwrap_or_else(|| "i64".to_string());
+                    let loaded = self.new_label("id");
+                    lambda_ir.push_str(&format!("%{} = load {}, {}* %{}\n", loaded, var_type, var_type, alloca));
+                    Ok(loaded)
+                } else if let Some(alloca) = self.variables.get(&name).cloned() {
+                    let var_type = self.variable_types.get(&name).cloned().unwrap_or_else(|| "i64".to_string());
+                    let loaded = self.new_label("id");
+                    lambda_ir.push_str(&format!("%{} = load {}, {}* %{}\n", loaded, var_type, var_type, alloca));
+                    Ok(loaded)
+                } else {
+                    Err("undefined variable")
+                }
+            }
+            Expr::Binary(binary) => {
+                let left = self.generate_expr_with_locals(&binary.left, local_vars, local_types, lambda_ir)?;
+                let right = self.generate_expr_with_locals(&binary.right, local_vars, local_types, lambda_ir)?;
+                let result = self.new_label("binop");
+                match binary.op {
+                    crate::ast::BinaryOp::Add => lambda_ir.push_str(&format!("%{} = add i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Sub => lambda_ir.push_str(&format!("%{} = sub i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Mul => lambda_ir.push_str(&format!("%{} = mul i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Div => lambda_ir.push_str(&format!("%{} = sdiv i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Rem => lambda_ir.push_str(&format!("%{} = srem i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Eq => lambda_ir.push_str(&format!("%{} = icmp eq i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Ne => lambda_ir.push_str(&format!("%{} = icmp ne i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Gt => lambda_ir.push_str(&format!("%{} = icmp sgt i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Lt => lambda_ir.push_str(&format!("%{} = icmp slt i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Ge => lambda_ir.push_str(&format!("%{} = icmp sge i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Le => lambda_ir.push_str(&format!("%{} = icmp sle i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::And => lambda_ir.push_str(&format!("%{} = and i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Or => lambda_ir.push_str(&format!("%{} = or i64 %{}, %{}\n", result, left, right)),
+                    _ => return Err("unsupported binary operator"),
+                }
+                Ok(result)
+            }
+            Expr::Unary(unary) => {
+                let operand = self.generate_expr_with_locals(&unary.operand, local_vars, local_types, lambda_ir)?;
+                let result = self.new_label("unary");
+                match unary.op {
+                    crate::ast::UnaryOp::Neg => lambda_ir.push_str(&format!("%{} = sub i64 0, %{}\n", result, operand)),
+                    crate::ast::UnaryOp::Not => lambda_ir.push_str(&format!("%{} = xor i64 %{}, 1\n", result, operand)),
+                    _ => return Err("unsupported unary operator"),
+                }
+                Ok(result)
+            }
+            _ => Err("unsupported expression in lambda body"),
+        }
     }
 
     /**
@@ -448,8 +904,12 @@ impl CodeGenerator {
         // 生成内置函数声明
         self.emit("; ==================== 内置函数 ====================");
         self.emit("");
-        
+
         // 运行时库函数 - 规范要求
+        // 内存分配函数
+        self.emit("declare i8* @malloc(i64)");
+        self.emit("declare void @rt_closure_destroy(i8*)");
+
         // 打印函数 (使用 ASCII 函数名以避免 LLVM IR 兼容性问题)
         self.emit("declare void @print(i8*)");
         
@@ -504,9 +964,27 @@ impl CodeGenerator {
         self.emit("; ==================== 用户函数 ====================");
         self.emit("");
 
+        // 首先保存泛型函数定义（用于特化）
+        for func in all_functions.iter() {
+            if func.is_generic() {
+                self.generic_functions.insert(func.name.clone(), func.clone());
+            }
+        }
+
         // 生成每个函数的 IR（包括导入模块的函数）
         for func in all_functions.iter() {
             self.generate_function(func)?;
+        }
+
+        // 生成全局函数定义（lambda 函数）
+        if !self.global_functions.is_empty() {
+            self.emit("");
+            self.emit("; ==================== Lambda 函数 ====================");
+            self.emit("");
+            let funcs = self.global_functions.clone();
+            for lambda_func in funcs {
+                self.emit(&lambda_func);
+            }
         }
 
         // 生成入口点包装函数（仅当用户定义了 "主" 函数时）
@@ -660,6 +1138,7 @@ impl CodeGenerator {
         self.variable_types.clear();
         self.label_counter = 0;
         self.closures.clear();
+        self.closure_vars.clear();
 
         // 保存当前函数信息（用于尾调用优化）
         let func_name = func.name.clone();
@@ -730,6 +1209,17 @@ impl CodeGenerator {
             }
         }
 
+        // 如果没有返回语句，添加默认返回和闭包销毁
+        if !has_return {
+            // 在返回前生成闭包销毁调用
+            self.emit_closure_destroys();
+            if func.return_type == Type::Void {
+                self.emit("ret void");
+            } else {
+                self.emit("ret i64 0");
+            }
+        }
+
         self.emit("}");
 
         // 清除函数信息
@@ -768,17 +1258,20 @@ impl CodeGenerator {
             Stmt::Assignment(assign_stmt) => {
                 self.generate_assignment_statement(assign_stmt)
             }
-            Stmt::Break(_) | Stmt::Continue(_) => {
-                Ok(()) // TODO: 实现 break/continue
+            Stmt::Break(break_stmt) => {
+                self.generate_break_statement(break_stmt)
             }
-            Stmt::StructDef(_) => {
-                Ok(()) // TODO: 实现结构体定义生成
+            Stmt::Continue(continue_stmt) => {
+                self.generate_continue_statement(continue_stmt)
             }
-            Stmt::EnumDef(_) => {
-                Ok(()) // TODO: 实现枚举定义生成
+            Stmt::StructDef(struct_def) => {
+                self.generate_struct_definition(struct_def)
             }
-            Stmt::TypeAlias(_) => {
-                Ok(()) // TODO: 实现类型别名生成
+            Stmt::EnumDef(enum_def) => {
+                self.generate_enum_definition(enum_def)
+            }
+            Stmt::TypeAlias(type_alias) => {
+                self.generate_type_alias(type_alias)
             }
             Stmt::Constant(constant) => {
                 self.generate_constant_statement(constant)
@@ -914,9 +1407,26 @@ impl CodeGenerator {
     }
 
     /**
+     * 生成闭包销毁调用
+     */
+    fn emit_closure_destroys(&mut self) {
+        let closure_vars_clone = self.closure_vars.clone();
+        let variables_clone = self.variables.clone();
+        for closure_var in closure_vars_clone {
+            if let Some(closure_ssa) = variables_clone.get(&closure_var) {
+                self.emit(&format!("call void @rt_closure_destroy(i8* %{})", closure_ssa));
+            }
+        }
+        self.closure_vars.clear();
+    }
+
+    /**
      * 生成返回语句（支持尾调用优化）
      */
     fn generate_return_statement(&mut self, return_stmt: &ReturnStmt) -> Result<(), CodegenError> {
+        // 在返回前生成闭包销毁调用
+        self.emit_closure_destroys();
+
         if let Some(value) = &return_stmt.value {
             // 检查是否是尾递归调用
             if self.in_tail_position {
@@ -971,25 +1481,33 @@ impl CodeGenerator {
 
             // then 分支
             self.emit_label(&then_label);
+            self.in_tail_position = false;  // 重置尾位置标志
             self.generate_statement(&branch.body)?;
-
-            // 跳转到结束
-            self.emit(&format!("br label %{}", end_label));
+            let then_terminated = self.in_tail_position;  // 记录 then 分支是否终止
+            // 只有当 then 分支没有终止指令时才添加跳转
+            if !then_terminated {
+                self.emit(&format!("br label %{}", end_label));
+            }
 
             // else 分支
             self.emit_label(&else_label);
+            self.in_tail_position = false;  // 重置尾位置标志
             if let Some(else_body) = &if_stmt.else_branch {
                 self.generate_statement(else_body)?;
             }
+            let else_terminated = self.in_tail_position;  // 记录 else 分支是否终止
+            // 只有当 else 分支没有终止指令时才添加跳转
+            if !else_terminated {
+                self.emit(&format!("br label %{}", end_label));
+            }
 
-            // else 分支也需要跳转到结束
-            self.emit(&format!("br label %{}", end_label));
+            // 结束标签：只有当 then 或 else 分支没有终止时才需要
+            if !then_terminated || !else_terminated {
+                self.emit_label(&end_label);
+            }
 
-            // 结束标签
-            self.emit_label(&end_label);
-
-            // if-else 结构结束后处于尾位置（因为 if 和 else 分支都会跳到这里）
-            self.in_tail_position = true;
+            // if-else 结构结束后：只有当两个分支都终止时才处于尾位置
+            self.in_tail_position = then_terminated && else_terminated;
         }
 
         Ok(())
@@ -1009,6 +1527,7 @@ impl CodeGenerator {
     fn generate_loop_statement(&mut self, loop_stmt: &LoopStmt) -> Result<(), CodegenError> {
         let loop_start = self.new_label("loop");
         let loop_body = self.new_label("loopbody");
+        let loop_continue = self.new_label("loopcont");
         let loop_end = self.new_label("loopend");
 
         // 跳到循环条件判断
@@ -1021,7 +1540,7 @@ impl CodeGenerator {
         if let Some(cond) = &loop_stmt.condition {
             let cond_result = self.generate_expression(cond)?;
             // 条件为真跳到循环体，为假跳到循环结束
-            self.emit(&format!("br i1 %{}, label %{}, label %{}", 
+            self.emit(&format!("br i1 %{}, label %{}, label %{}",
                 cond_result, loop_body, loop_end));
         } else {
             // 无限循环，直接跳到循环体
@@ -1031,14 +1550,29 @@ impl CodeGenerator {
         // 循环体入口
         self.emit_label(&loop_body);
 
-        // 循环体处于尾位置（如果最后是 return递归 可以优化）
-        self.in_tail_position = true;
+        // 创建循环上下文并入栈（用于 break/continue）
+        let loop_ctx = LoopContext {
+            loop_start: loop_start.clone(),
+            loop_body: loop_body.clone(),
+            loop_continue: loop_continue.clone(),
+            loop_end: loop_end.clone(),
+        };
+        self.loop_context_stack.push(loop_ctx);
 
         // 生成循环体
+        self.in_tail_position = false;  // 重置尾位置标志
         self.generate_statement(&loop_stmt.body)?;
 
-        // 循环体执行完后，跳回条件判断（这不是尾调用优化的位置）
-        self.in_tail_position = false;
+        // 循环体执行完后，出栈循环上下文
+        self.loop_context_stack.pop();
+
+        // 只有当循环体没有终止指令时才生成跳转
+        if !self.in_tail_position {
+            self.emit(&format!("br label %{}", loop_continue));
+        }
+
+        // continue 跳转目标：跳回条件判断
+        self.emit_label(&loop_continue);
         self.emit(&format!("br label %{}", loop_start));
 
         // 循环结束标签
@@ -1051,16 +1585,99 @@ impl CodeGenerator {
     }
 
     /**
+     * 生成 break 语句
+     * 跳转到当前循环的结束标签
+     */
+    fn generate_break_statement(&mut self, _break_stmt: &BreakStmt) -> Result<(), CodegenError> {
+        if let Some(ctx) = self.loop_context_stack.last() {
+            self.emit(&format!("br label %{}", ctx.loop_end));
+            self.in_tail_position = true;  // 标记当前基本块已终止
+        }
+        Ok(())
+    }
+
+    /**
+     * 生成 continue 语句
+     * 跳转到当前循环的 continue 标签（跳过循环体中 continue 之后的代码）
+     */
+    fn generate_continue_statement(&mut self, _continue_stmt: &ContinueStmt) -> Result<(), CodegenError> {
+        if let Some(ctx) = self.loop_context_stack.last() {
+            self.emit(&format!("br label %{}", ctx.loop_continue));
+            self.in_tail_position = true;  // 标记当前基本块已终止
+        }
+        Ok(())
+    }
+
+    /**
+     * 生成结构体定义
+     * 在 LLVM IR 中定义结构体类型
+     * 结构体布局: %struct.Name = type { 字段类型... }
+     */
+    fn generate_struct_definition(&mut self, struct_def: &StructDefinition) -> Result<(), CodegenError> {
+        let struct_name = self.escape_llvm_ident(&struct_def.name);
+        let type_name = format!("%struct.{}", struct_name);
+
+        if struct_def.fields.is_empty() {
+            self.emit(&format!("{} = type {{}}", type_name));
+        } else {
+            let field_types: Vec<&str> = struct_def.fields.iter()
+                .map(|field| type_to_llvm(&field.field_type))
+                .collect();
+            self.emit(&format!("{} = type {{ {} }}", type_name, field_types.join(", ")));
+        }
+
+        Ok(())
+    }
+
+    /**
+     * 生成枚举定义
+     * 在 LLVM IR 中用 tagged union 实现枚举
+     * 枚举布局: %enum.Name = type { i64 (标签), [union 数据] }
+     * 每个变体存储为不同的结构
+     */
+    fn generate_enum_definition(&mut self, enum_def: &EnumDefinition) -> Result<(), CodegenError> {
+        let enum_name = self.escape_llvm_ident(&enum_def.name);
+        let type_name = format!("%enum.{}", enum_name);
+
+        if enum_def.variants.is_empty() {
+            self.emit(&format!("{} = type {{ i64 }}", type_name));
+        } else {
+            let mut all_types: Vec<String> = vec!["i64".to_string()];
+            for variant in &enum_def.variants {
+                if variant.fields.is_empty() {
+                    all_types.push("i64".to_string());
+                } else {
+                    let variant_fields: Vec<&str> = variant.fields.iter()
+                        .map(|f| type_to_llvm(&f.field_type))
+                        .collect();
+                    all_types.push(format!("{{ {} }}", variant_fields.join(", ")));
+                }
+            }
+            self.emit(&format!("{} = type {{ {} }}", type_name, all_types.join(", ")));
+        }
+
+        Ok(())
+    }
+
+    /**
+     * 生成类型别名
+     * 类型别名在 IR 中记录类型映射，不生成额外代码
+     */
+    fn generate_type_alias(&mut self, _type_alias: &TypeAlias) -> Result<(), CodegenError> {
+        Ok(())
+    }
+
+    /**
      * 生成块语句
      */
     fn generate_block_statement(&mut self, block_stmt: &BlockStmt) -> Result<(), CodegenError> {
         for stmt in &block_stmt.statements {
             self.generate_statement(stmt)?;
+            // 如果语句已经终止了当前基本块，后面的语句不会执行
+            // 但我们仍然继续生成（虽然它们可能是不可达代码）
         }
-        // 块语句结束后处于尾位置
-        if !block_stmt.statements.is_empty() {
-            self.in_tail_position = true;
-        }
+        // 块语句结束后，in_tail_position 保持最后一条语句的状态
+        // 不需要额外设置
         Ok(())
     }
 
@@ -1399,70 +2016,103 @@ impl CodeGenerator {
 
                 let lambda_func_name = format!("lambda_{}_func", lambda_id);
                 let closure_var_name = format!("closure_{}", lambda_id);
-                let captured_count = lambda.captured_vars.len();
 
-                // ===== 第一步：生成 Lambda 函数 =====
+                // 收集 lambda 参数名称
+                let param_names: Vec<String> = lambda.params.iter().map(|p| p.name.clone()).collect();
+
+                // 在代码生成时重新收集捕获变量
+                let captured_vars = self.collect_captured_vars(&lambda.body, &param_names);
+                let captured_count = captured_vars.len();
+
+                // ===== 第一步：生成 Lambda 函数定义（收集到全局函数列表） =====
                 // Lambda 函数签名: i64 (i8*)
                 // 第一个参数是闭包上下文的 i8* 指针
-                self.emit(&format!("define i64 @{}(i8* %ctx) {{", lambda_func_name));
-
-                // 在函数入口保存当前上下文
-                self.emit("entry:");
+                let mut lambda_func_ir = format!("define i64 @{}(i8* %ctx) {{\n", lambda_func_name);
+                lambda_func_ir.push_str("entry:\n");
 
                 // 为参数分配空间并注册
+                let mut local_vars = std::collections::HashMap::new();
+                let mut local_types = std::collections::HashMap::new();
                 for param in &lambda.params {
                     let param_type = type_to_llvm(&param.param_type);
-                    let param_alloca = self.new_label("param");
-                    self.emit(&format!("%{} = alloca {}", param_alloca, param_type));
+                    let param_alloca = format!("param.{}", self.new_label_nocount());
+                    lambda_func_ir.push_str(&format!("%{} = alloca {}\n", param_alloca, param_type));
                     let translated_name = self.translate_func_name(&param.name);
-                    self.variables.insert(translated_name.clone(), param_alloca.clone());
-                    self.variable_types.insert(translated_name, param_type.to_string());
+                    local_vars.insert(translated_name.clone(), param_alloca.clone());
+                    local_types.insert(translated_name, param_type.to_string());
                 }
 
                 // ===== 从闭包上下文加载捕获的变量 =====
+                // 闭包结构：[函数指针: 8字节][捕获数量: 8字节][捕获变量...][参数...]
                 let mut captured_offset = 16;
-                for captured_var in &lambda.captured_vars {
+                for captured_var in &captured_vars {
                     let captured_type = type_to_llvm(&captured_var.var_type);
-                    let captured_alloca = self.new_label("captured");
-                    self.emit(&format!("%{} = alloca {}", captured_alloca, captured_type));
+                    let captured_alloca = format!("captured.{}", self.new_label_nocount());
+                    lambda_func_ir.push_str(&format!("%{} = alloca {}\n", captured_alloca, captured_type));
 
                     // 计算捕获变量的 GEP
-                    let gep = self.new_label("gep");
-                    self.emit(&format!("%{} = getelementptr i8, i8* %ctx, i64 {}", gep, captured_offset));
+                    let gep = format!("gep.{}", self.new_label_nocount());
+                    lambda_func_ir.push_str(&format!("%{} = getelementptr i8, i8* %ctx, i64 {}\n", gep, captured_offset));
 
                     // 转换为目标类型指针并加载
-                    let ptr_cast = self.new_label("ptr_cast");
-                    self.emit(&format!("%{} = bitcast i8* %{} to {}*", ptr_cast, gep, captured_type));
-                    let loaded = self.new_label("loaded");
-                    self.emit(&format!("%{} = load {}, {}* %{}", loaded, captured_type, captured_type, ptr_cast));
+                    let ptr_cast = format!("ptr_cast.{}", self.new_label_nocount());
+                    lambda_func_ir.push_str(&format!("%{} = bitcast i8* %{} to {}*\n", ptr_cast, gep, captured_type));
+                    let loaded = format!("loaded.{}", self.new_label_nocount());
+                    lambda_func_ir.push_str(&format!("%{} = load {}, {}* %{}\n", loaded, captured_type, captured_type, ptr_cast));
 
                     // 存储到局部变量
-                    self.emit(&format!("store {} %{}, {}* %{}", captured_type, loaded, captured_type, captured_alloca));
+                    lambda_func_ir.push_str(&format!("store {} %{}, {}* %{}\n", captured_type, loaded, captured_type, captured_alloca));
 
-                    // 注册到变量表
-                    self.variables.insert(captured_var.name.clone(), captured_alloca.clone());
-                    self.variable_types.insert(captured_var.name.clone(), captured_type.to_string());
+                    // 注册到局部变量表
+                    local_vars.insert(captured_var.name.clone(), captured_alloca.clone());
+                    local_types.insert(captured_var.name.clone(), captured_type.to_string());
 
                     // 更新偏移量
-                    let type_size = if captured_type == "double" { 8 } else { 8 };
-                    captured_offset += type_size;
+                    captured_offset += 8;
                 }
 
-                // 生成函数体
-                let body_result = self.generate_expression(&lambda.body)?;
+                // ===== 从闭包上下文加载参数 =====
+                // 参数存储在捕获变量之后
+                let mut param_offset = 16 + captured_count * 8;
+                for param in &lambda.params {
+                    let param_type = type_to_llvm(&param.param_type);
+                    let translated_name = self.translate_func_name(&param.name);
+                    
+                    if let Some(param_alloca) = local_vars.get(&translated_name) {
+                        // 计算参数的 GEP
+                        let gep = format!("param_gep.{}", self.new_label_nocount());
+                        lambda_func_ir.push_str(&format!("%{} = getelementptr i8, i8* %ctx, i64 {}\n", gep, param_offset));
 
-                // 生成返回指令
-                self.emit(&format!("ret i64 %{}", body_result));
-                self.emit("}");
+                        // 转换为目标类型指针并加载
+                        let ptr_cast = format!("param_ptr_cast.{}", self.new_label_nocount());
+                        lambda_func_ir.push_str(&format!("%{} = bitcast i8* %{} to {}*\n", ptr_cast, gep, param_type));
+                        let loaded = format!("param_loaded.{}", self.new_label_nocount());
+                        lambda_func_ir.push_str(&format!("%{} = load {}, {}* %{}\n", loaded, param_type, param_type, ptr_cast));
+
+                        // 存储到参数的局部变量
+                        lambda_func_ir.push_str(&format!("store {} %{}, {}* %{}\n", param_type, loaded, param_type, param_alloca));
+                    }
+                    param_offset += 8;
+                }
+
+                // 生成函数体（使用临时的 generate_expression_with_locals）
+                let (body_ir, body_result) = self.generate_lambda_body(&lambda.body, &local_vars, &local_types)?;
+                lambda_func_ir.push_str(&body_ir);
+                lambda_func_ir.push_str(&format!("ret i64 %{}\n", body_result));
+                lambda_func_ir.push_str("}\n");
+
+                // 将 lambda 函数定义添加到全局函数列表
+                self.global_functions.push(lambda_func_ir);
 
                 // ===== 第二步：创建闭包结构 =====
 
-                // 计算闭包大小：16 字节头 + 每个捕获变量 8 字节
-                let closure_size = 16 + captured_count * 8;
+                // 计算闭包大小：16 字节头 + 捕获变量 + 参数槽位
+                let param_count = lambda.params.len();
+                let closure_size = 16 + captured_count * 8 + param_count * 8;
                 let size_label = self.new_label("closure_size");
                 self.emit(&format!("%{} = mul i64 1, {}", size_label, closure_size));
 
-                // 分配闭包内存
+                // 分配闭包内存（malloc 返回 i8*）
                 let malloc_label = self.new_label("malloc");
                 self.emit(&format!("%{} = call i8* @malloc(i64 %{})", malloc_label, size_label));
 
@@ -1488,7 +2138,7 @@ impl CodeGenerator {
 
                 // ===== 第三步：复制捕获变量的当前值到闭包 =====
                 let mut copy_offset = 16;
-                for captured_var in &lambda.captured_vars {
+                for captured_var in &captured_vars {
                     // 获取外部变量的当前值
                     if let Some(var_ssa) = self.variables.get(&captured_var.name).cloned() {
                         let var_type = type_to_llvm(&captured_var.var_type);
@@ -1509,13 +2159,15 @@ impl CodeGenerator {
                     copy_offset += 8;
                 }
 
-                // 返回闭包指针（作为 i64）
-                let result = self.new_label("closure_result");
-                self.emit(&format!("%{} = ptrtoint i8* %{} to i64", result, malloc_label));
+                // 返回闭包指针（i8* 直接使用）
+                // 注意：我们使用 malloc_label 作为闭包指针的 SSA 值
+                let result = malloc_label;
 
                 // 注册闭包变量
                 self.variables.insert(closure_var_name.clone(), result.clone());
-                self.variable_types.insert(closure_var_name, "i64".to_string());
+                self.variable_types.insert(closure_var_name.clone(), "i8*".to_string());
+                // 添加到需要销毁的闭包变量列表
+                self.closure_vars.push(closure_var_name);
 
                 Ok(result)
             }
@@ -1997,13 +2649,52 @@ impl CodeGenerator {
                 func_name.clone()
             };
 
+            // 获取闭包指针类型
+            let closure_type = self.variable_types.get(&closure_name).cloned().unwrap_or_else(|| "i64".to_string());
+            
+            let closure_int_ptr = if closure_type == "i8*" {
+                // 闭包已经是 i8* 类型
+                closure_ptr.clone()
+            } else {
+                // 闭包是 i64 类型，需要转换
+                let closure_val = self.new_label("closure_val");
+                self.emit(&format!("%{} = load i64, i64* %{}", closure_val, closure_ptr));
+                let int_ptr = self.new_label("closure_int_ptr");
+                self.emit(&format!("%{} = inttoptr i64 %{} to i8*", int_ptr, closure_val));
+                int_ptr
+            };
+
+            // 从闭包中读取捕获变量数量（偏移 8）
+            let captured_count_ptr = self.new_label("captured_count_ptr");
+            self.emit(&format!("%{} = getelementptr i8, i8* %{}, i64 8", captured_count_ptr, closure_int_ptr));
+            let captured_count_ptr_cast = self.new_label("captured_count_ptr_cast");
+            self.emit(&format!("%{} = bitcast i8* %{} to i64*", captured_count_ptr_cast, captured_count_ptr));
+            let captured_count_val = self.new_label("captured_count_val");
+            self.emit(&format!("%{} = load i64, i64* %{}", captured_count_val, captured_count_ptr_cast));
+
+            // 计算参数存储偏移量：16 + captured_count * 8
+            let param_base_offset = self.new_label("param_base_offset");
+            self.emit(&format!("%{} = mul i64 %{}, 8", param_base_offset, captured_count_val));
+            let param_offset_val = self.new_label("param_offset_val");
+            self.emit(&format!("%{} = add i64 16, %{}", param_offset_val, param_base_offset));
+
+            // 将参数存储到闭包的参数槽位
+            let mut param_index = 0i64;
+            for arg in &args {
+                // 计算当前参数的偏移量
+                let current_offset = self.new_label("current_param_offset");
+                self.emit(&format!("%{} = add i64 %{}, {}", current_offset, param_offset_val, param_index * 8));
+                
+                let param_gep = self.new_label("param_gep");
+                self.emit(&format!("%{} = getelementptr i8, i8* %{}, i64 %{}", param_gep, closure_int_ptr, current_offset));
+                let param_ptr = self.new_label("param_ptr");
+                self.emit(&format!("%{} = bitcast i8* %{} to i64*", param_ptr, param_gep));
+                // 参数格式是 "i64 %xxx"，直接使用
+                self.emit(&format!("store {}, i64* %{}", arg, param_ptr));
+                param_index += 1;
+            }
+
             // 从闭包中提取函数指针（偏移 0 处）
-            let closure_val = self.new_label("closure_val");
-            self.emit(&format!("%{} = load i64, i64* %{}", closure_val, closure_ptr));
-
-            let closure_int_ptr = self.new_label("closure_int_ptr");
-            self.emit(&format!("%{} = inttoptr i64 %{} to i8*", closure_int_ptr, closure_val));
-
             let func_ptr_ptr = self.new_label("func_ptr_ptr");
             self.emit(&format!("%{} = getelementptr i8, i8* %{}, i64 0", func_ptr_ptr, closure_int_ptr));
 
@@ -2013,13 +2704,9 @@ impl CodeGenerator {
             let func_ptr = self.new_label("func_ptr");
             self.emit(&format!("%{} = load i64 (i8*)*, i64 (i8*)* %{}", func_ptr, func_ptr_ptr_cast));
 
-            // 构建闭包调用的参数列表：闭包上下文 + 用户参数
-            let mut closure_args = vec![format!("i8* %{}", closure_int_ptr)];
-            closure_args.extend(args.iter().map(|a| a.clone()));
-
-            let args_str = closure_args.join(", ");
+            // 调用闭包函数，只传递闭包指针
             let result = self.new_label("closure_call");
-            self.emit(&format!("%{} = call i64 %{}({})", result, func_ptr, args_str));
+            self.emit(&format!("%{} = call i64 %{}(i8* %{})", result, func_ptr, closure_int_ptr));
 
             Ok(result)
         } else if args.is_empty() {

@@ -11,7 +11,7 @@
 #define pclose _pclose
 #endif
 
-/* List structure */
+/** List structure */
 typedef struct {
     void** items;
     int64_t count;
@@ -26,6 +26,21 @@ void* rt_list_new() {
     list->count = 0;
     list->capacity = 0;
     return list;
+}
+
+/* Closure structure - matches LLVM IR layout
+ * Layout: [func_ptr: 8 bytes][captured_count: 8 bytes][captured_vars...][param_slots...]
+ */
+typedef struct {
+    void* func_ptr;
+    int64_t captured_count;
+    /* captured variables and param slots follow */
+} Closure;
+
+/* Free closure memory */
+void rt_closure_destroy(void* closure_ptr) {
+    if (!closure_ptr) return;
+    free(closure_ptr);
 }
 
 /* Append to list */

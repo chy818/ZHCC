@@ -81,22 +81,46 @@ impl Scope {
 }
 
 /**
+ * 函数签名
+ * 存储函数的参数类型和返回类型
+ */
+#[derive(Debug, Clone)]
+struct FunctionSignature {
+    /// 参数类型列表
+    param_types: Vec<Type>,
+    /// 返回类型
+    return_type: Type,
+    /// 是否是泛型函数
+    is_generic: bool,
+    /// 类型参数名称列表
+    type_params: Vec<String>,
+}
+
+/**
  * 语义分析器
  */
 pub struct SemanticAnalyzer {
     scopes: Vec<Scope>,
     errors: Vec<TypeError>,
     import_stack: Vec<String>,
+    /// 当前泛型函数的类型变量映射
+    /// 例如: T -> 整数, U -> 文本
+    type_var_bindings: std::collections::HashMap<String, Type>,
+    /// 函数签名表
+    /// 存储所有已定义函数的签名信息
+    function_signatures: std::collections::HashMap<String, FunctionSignature>,
 }
 
 impl SemanticAnalyzer {
     pub fn new() -> Self {
         let mut scopes = Vec::new();
         scopes.push(Scope::new(None)); // 全局作用域
-        Self { 
-            scopes, 
+        Self {
+            scopes,
             errors: Vec::new(),
             import_stack: Vec::new(),
+            type_var_bindings: std::collections::HashMap::new(),
+            function_signatures: std::collections::HashMap::new(),
         }
     }
 
@@ -113,6 +137,86 @@ impl SemanticAnalyzer {
      */
     fn exit_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    /**
+     * 添加类型变量绑定
+     */
+    fn add_type_var_binding(&mut self, type_var: String, concrete_type: Type) {
+        self.type_var_bindings.insert(type_var, concrete_type);
+    }
+
+    /**
+     * 查找类型变量绑定
+     */
+    fn lookup_type_var(&self, type_var: &str) -> Option<Type> {
+        self.type_var_bindings.get(type_var).cloned()
+    }
+
+    /**
+     * 清除类型变量绑定（进入泛型函数时调用）
+     */
+    fn clear_type_vars(&mut self) {
+        self.type_var_bindings.clear();
+    }
+
+    /**
+     * 替换类型中的类型变量为具体类型
+     */
+    #[allow(dead_code)]
+    fn substitute_type_vars(&self, type_hint: &Type) -> Type {
+        match type_hint {
+            Type::TypeVar(name) => {
+                self.lookup_type_var(name).unwrap_or_else(|| type_hint.clone())
+            }
+            Type::List(elem) => {
+                Type::List(Box::new(self.substitute_type_vars(elem)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_vars(inner)))
+            }
+            Type::Array(elem) => {
+                Type::Array(Box::new(self.substitute_type_vars(elem)))
+            }
+            Type::Function(param_types, return_type) => {
+                let substituted_params: Vec<Type> = param_types.iter()
+                    .map(|t| self.substitute_type_vars(t))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_vars(return_type));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => type_hint.clone(),
+        }
+    }
+
+    /**
+     * 使用给定的类型映射替换类型变量
+     * @param type_hint 要替换的类型
+     * @param type_subst 类型变量到具体类型的映射
+     */
+    fn substitute_type_with_map(&self, type_hint: &Type, type_subst: &std::collections::HashMap<String, Type>) -> Type {
+        match type_hint {
+            Type::TypeVar(name) => {
+                type_subst.get(name).cloned().unwrap_or_else(|| type_hint.clone())
+            }
+            Type::List(elem) => {
+                Type::List(Box::new(self.substitute_type_with_map(elem, type_subst)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_with_map(inner, type_subst)))
+            }
+            Type::Array(elem) => {
+                Type::Array(Box::new(self.substitute_type_with_map(elem, type_subst)))
+            }
+            Type::Function(param_types, return_type) => {
+                let substituted_params: Vec<Type> = param_types.iter()
+                    .map(|t| self.substitute_type_with_map(t, type_subst))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_with_map(return_type, type_subst));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => type_hint.clone(),
+        }
     }
 
     /**
@@ -205,6 +309,18 @@ impl SemanticAnalyzer {
                 false,
                 func.span,
             );
+            
+            // 存储函数签名（用于泛型函数调用的类型推断）
+            let param_types: Vec<Type> = func.params.iter()
+                .map(|p| p.param_type.clone())
+                .collect();
+            let signature = FunctionSignature {
+                param_types,
+                return_type: func.return_type.clone(),
+                is_generic: !func.type_params.is_empty(),
+                type_params: func.type_params.iter().map(|tp| tp.name.clone()).collect(),
+            };
+            self.function_signatures.insert(func.name.clone(), signature);
         }
 
         // 验证每个函数
@@ -320,17 +436,51 @@ impl SemanticAnalyzer {
         // 进入函数作用域
         self.enter_scope();
 
+        // 如果是泛型函数，注册类型参数
+        let is_generic = !func.type_params.is_empty();
+        if is_generic {
+            self.clear_type_vars();
+            for type_param in &func.type_params {
+                self.add_type_var_binding(
+                    type_param.name.clone(),
+                    Type::TypeVar(type_param.name.clone()),
+                );
+            }
+        }
+
+        // 构建类型参数名集合，用于快速查找
+        let type_param_names: std::collections::HashSet<String> =
+            func.type_params.iter().map(|tp| tp.name.clone()).collect();
+
+        // 处理返回类型中的类型参数
+        let return_type = self.substitute_custom_to_typevar(&func.return_type, &type_param_names);
+
         // 添加函数参数到作用域
         // 注意：XY编译器自展时会遇到前向引用问题（如 Parser 类型在函数定义之后才定义）
         // 因此我们跳过参数类型的验证，只注册参数名
         for param in &func.params {
-            // 使用 Type::Unknown 作为参数类型，避免前向引用问题
+            // 检查参数类型是否是自定义类型且名称与类型参数匹配
+            let param_type = self.substitute_custom_to_typevar(&param.param_type, &type_param_names);
+
             self.define_symbol(
                 param.name.clone(),
-                Type::Unknown,
+                param_type.clone(),
                 false,
                 Span::dummy(),
             );
+        }
+
+        // 检查返回类型是否有效
+        match &return_type {
+            Type::TypeVar(_name) => {
+                // 类型变量是允许的
+            }
+            Type::Unknown => {
+                // Unknown 是允许的，表示尚未推断
+            }
+            _ => {
+                // 其他类型是有效的
+            }
         }
 
         // 分析函数体
@@ -341,7 +491,44 @@ impl SemanticAnalyzer {
         // 退出函数作用域
         self.exit_scope();
 
+        // 如果是泛型函数，清除类型变量绑定
+        if is_generic {
+            self.clear_type_vars();
+        }
+
         Ok(())
+    }
+
+    /**
+     * 将 Custom("T") 替换为 TypeVar("T") 如果 T 在类型参数列表中
+     */
+    fn substitute_custom_to_typevar(&self, type_hint: &Type, type_param_names: &std::collections::HashSet<String>) -> Type {
+        match type_hint {
+            Type::Custom(name) => {
+                if type_param_names.contains(name) {
+                    Type::TypeVar(name.clone())
+                } else {
+                    type_hint.clone()
+                }
+            }
+            Type::List(elem) => {
+                Type::List(Box::new(self.substitute_custom_to_typevar(elem, type_param_names)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_custom_to_typevar(inner, type_param_names)))
+            }
+            Type::Array(elem) => {
+                Type::Array(Box::new(self.substitute_custom_to_typevar(elem, type_param_names)))
+            }
+            Type::Function(param_types, return_type) => {
+                let substituted_params: Vec<Type> = param_types.iter()
+                    .map(|t| self.substitute_custom_to_typevar(t, type_param_names))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_custom_to_typevar(return_type, type_param_names));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => type_hint.clone(),
+        }
     }
 
     /**
@@ -592,7 +779,7 @@ impl SemanticAnalyzer {
         self.define_symbol(
             let_stmt.name.clone(),
             var_type,
-            false, // TODO: 支持可变
+            let_stmt.is_mutable, // 使用 AST 中的 is_mutable 标志
             let_stmt.span,
         );
 
@@ -665,24 +852,81 @@ impl SemanticAnalyzer {
 
     /**
      * 验证赋值语句
+     * 检查：1. 变量是否已定义 2. 变量是否可变 3. 赋值类型兼容性
      */
     fn analyze_assignment_statement(&mut self, assign_stmt: &AssignmentStmt) -> Result<Type, Vec<TypeError>> {
         // 检查左值
         if let Expr::Identifier(ident) = &assign_stmt.target {
-            let symbol = self.lookup_symbol(&ident.name);
-            if symbol.is_none() {
-                self.error(
-                    format!("未定义的变量: {}", ident.name),
-                    ident.span,
-                );
+            let symbol_info = self.lookup_symbol(&ident.name).cloned();
+            
+            if symbol_info.is_none() {
+                return Err(vec![TypeError {
+                    code: "CCAS-T001".to_string(),
+                    message: format!("未定义的变量: {}", ident.name),
+                    span: ident.span,
+                }]);
             }
+            
+            // 获取符号信息的副本
+            let sym = symbol_info.unwrap();
+            
+            // 检查变量是否可变
+            if !sym.is_mutable {
+                return Err(vec![TypeError {
+                    code: "CCAS-T002".to_string(),
+                    message: format!("变量 '{}' 是不可变的，不能重新赋值。使用 '定义 可变 {}' 声明可变变量", 
+                        ident.name, ident.name),
+                    span: ident.span,
+                }]);
+            }
+            
+            // 检查赋值类型兼容性
+            let value_type = self.analyze_expression(&assign_stmt.value)?;
+            if sym.symbol_type != Type::Unknown && value_type != Type::Unknown {
+                if !self.is_type_compatible(&sym.symbol_type, &value_type) {
+                    return Err(vec![TypeError {
+                        code: "CCAS-T003".to_string(),
+                        message: format!("赋值类型不匹配: 变量 '{}' 类型为 {:?}, 但赋值类型为 {:?}", 
+                            ident.name, sym.symbol_type, value_type),
+                        span: assign_stmt.value.span(),
+                    }]);
+                }
+            }
+        } else {
+            // 非标识符的左值（如数组索引、结构体字段等）
+            self.analyze_expression(&assign_stmt.target)?;
         }
 
-        let _value_type = self.analyze_expression(&assign_stmt.value)?;
-        
-        // TODO: 检查赋值类型兼容性
-        
         Ok(Type::Void)
+    }
+
+    /**
+     * 检查类型兼容性
+     * 判断 source_type 是否可以赋值给 target_type
+     */
+    fn is_type_compatible(&self, target_type: &Type, source_type: &Type) -> bool {
+        match (target_type, source_type) {
+            // 相同类型直接兼容
+            (t1, t2) if t1 == t2 => true,
+            
+            // Unknown 类型可以接受任何类型（用于自展）
+            (Type::Unknown, _) | (_, Type::Unknown) => true,
+            
+            // 整数类型兼容（包括不同位宽）
+            (Type::Int, Type::Int) => true,
+            (Type::Long, Type::Int) => true,
+            (Type::Int, Type::Long) => true,
+            (Type::Long, Type::Long) => true,
+            
+            // 浮点类型兼容
+            (Type::Float, Type::Float) => true,
+            (Type::Double, Type::Float) => true,
+            (Type::Float, Type::Double) => true,
+            (Type::Double, Type::Double) => true,
+            
+            // 其他情况不兼容
+            _ => false,
+        }
     }
 
     /**
@@ -691,7 +935,12 @@ impl SemanticAnalyzer {
     fn analyze_expression(&mut self, expr: &Expr) -> Result<Type, Vec<TypeError>> {
         match expr {
             Expr::Identifier(ident) => {
-                // 首先查找变量符号
+                // 首先检查是否是类型变量（泛型参数）
+                if let Some(type_var) = self.lookup_type_var(&ident.name) {
+                    return Ok(type_var);
+                }
+
+                // 其次查找变量符号
                 let symbol = self.lookup_symbol(&ident.name);
                 match symbol {
                     Some(s) => Ok(s.symbol_type.clone()),
@@ -779,6 +1028,7 @@ impl SemanticAnalyzer {
 
                 // 2. 注册参数为局部变量
                 let mut param_names = Vec::new();
+                let mut param_types = Vec::new();
                 for param in &lambda.params {
                     self.define_symbol(
                         param.name.clone(),
@@ -787,21 +1037,25 @@ impl SemanticAnalyzer {
                         lambda.span
                     );
                     param_names.push(param.name.clone());
+                    param_types.push(param.param_type.clone());
                 }
 
                 // 3. 分析函数体，收集自由变量（外部变量）
                 let mut captured_vars = Vec::new();
                 self.collect_free_variables(&lambda.body, &param_names, &mut captured_vars)?;
 
-                // 4. 退出作用域
+                // 4. 分析函数体获取返回类型
+                let body_type = self.analyze_expression(&lambda.body)?;
+
+                // 5. 退出作用域
                 self.exit_scope();
 
-                // 5. 更新 Lambda 的捕获变量列表
+                // 6. 更新 Lambda 的捕获变量列表
                 let mut lambda_mut = lambda.clone();
                 lambda_mut.captured_vars = captured_vars.clone();
 
-                // 6. 返回函数类型（简化处理，返回 Unknown）
-                Ok(Type::Unknown)
+                // 7. 返回函数类型
+                Ok(Type::Function(param_types, Box::new(body_type)))
             }
         }
     }
@@ -819,11 +1073,11 @@ impl SemanticAnalyzer {
     ) -> Result<(), Vec<TypeError>> {
         match expr {
             Expr::Identifier(ident) => {
-                // 检查是否是参数
+                // 检查是否是 lambda 参数
                 if !param_names.contains(&ident.name) {
-                    // 检查是否是局部变量（通过查找符号）
-                    if self.lookup_symbol(&ident.name).is_none() {
-                        // 这是一个自由变量，需要捕获
+                    // 检查变量是否存在于符号表中
+                    if let Some(_symbol) = self.lookup_symbol(&ident.name) {
+                        // 变量存在，需要捕获（因为 lambda 是独立函数，无法访问外部栈帧）
                         // 检查是否已经捕获
                         if !captured.iter().any(|v| v.name == ident.name) {
                             // 获取变量类型
@@ -834,6 +1088,7 @@ impl SemanticAnalyzer {
                             });
                         }
                     }
+                    // 如果变量不存在于符号表中，可能是全局函数，不需要捕获
                 }
                 Ok(())
             }
@@ -949,8 +1204,45 @@ impl SemanticAnalyzer {
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr | BinaryOp::Hash => {
                 Ok(left_type)
             }
-            // 赋值
+            // 赋值：需要检查左值是否可变
             BinaryOp::Assign => {
+                // 检查左值是否是标识符
+                if let Expr::Identifier(ident) = binary.left.as_ref() {
+                    let symbol_info = self.lookup_symbol(&ident.name).cloned();
+                    
+                    if symbol_info.is_none() {
+                        return Err(vec![TypeError {
+                            code: "CCAS-T001".to_string(),
+                            message: format!("未定义的变量: {}", ident.name),
+                            span: ident.span,
+                        }]);
+                    }
+                    
+                    let sym = symbol_info.unwrap();
+                    
+                    // 检查变量是否可变
+                    if !sym.is_mutable {
+                        return Err(vec![TypeError {
+                            code: "CCAS-T002".to_string(),
+                            message: format!("变量 '{}' 是不可变的，不能重新赋值。使用 '定义 可变 {}' 声明可变变量", 
+                                ident.name, ident.name),
+                            span: ident.span,
+                        }]);
+                    }
+                    
+                    // 检查赋值类型兼容性
+                    if sym.symbol_type != Type::Unknown && right_type != Type::Unknown {
+                        if !self.is_type_compatible(&sym.symbol_type, &right_type) {
+                            return Err(vec![TypeError {
+                                code: "CCAS-T003".to_string(),
+                                message: format!("赋值类型不匹配: 变量 '{}' 类型为 {:?}, 但赋值类型为 {:?}", 
+                                    ident.name, sym.symbol_type, right_type),
+                                span: binary.right.span(),
+                            }]);
+                        }
+                    }
+                }
+                
                 Ok(right_type)
             }
         }
@@ -1025,7 +1317,31 @@ impl SemanticAnalyzer {
                 }
                 _ => {}
             }
-            
+
+            // 处理带有显式类型参数的泛型调用
+            if !call.type_args.is_empty() {
+                // 查找函数签名
+                if let Some(signature) = self.function_signatures.get(&ident.name).cloned() {
+                    if signature.is_generic {
+                        // 创建类型参数映射
+                        let mut type_subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+                        for (i, type_param) in signature.type_params.iter().enumerate() {
+                            if i < call.type_args.len() {
+                                type_subst.insert(type_param.clone(), call.type_args[i].clone());
+                            }
+                        }
+                        
+                        // 替换返回类型中的类型变量
+                        let return_type = self.substitute_type_with_map(&signature.return_type, &type_subst);
+                        return Ok(return_type);
+                    }
+                }
+                
+                // 没有找到函数签名，使用第一个类型参数作为返回类型
+                let return_type = call.type_args[0].clone();
+                return Ok(return_type);
+            }
+
             // 查找符号
             let symbol = self.lookup_symbol(&ident.name);
             if let Some(sym) = symbol {
@@ -1044,7 +1360,7 @@ impl SemanticAnalyzer {
                 // 返回找到的符号类型
                 return Ok(sym.symbol_type.clone());
             }
-            
+
             // 没找到，尝试查找枚举变体
             if let Some(enum_name) = self.find_enum_variant(&ident.name) {
                 return Ok(Type::Custom(enum_name));
@@ -1132,6 +1448,33 @@ impl TypeExt for Type {
             (Type::Long, Type::Float) => true,
             (Type::Long, Type::Double) => true,
             (Type::Float, Type::Double) => true,
+            // Unknown 类型可以接受任何类型
+            (_, Type::Unknown) => true,
+            (Type::Unknown, _) => true,
+            // 函数类型兼容：参数和返回类型数量相同即可
+            (Type::Function(params_s, ret_s), Type::Function(params_t, ret_t)) => {
+                // 如果目标参数类型包含 Unknown 或为空，则接受任意参数
+                // 如果目标返回类型是 Unknown，则接受任何返回类型
+                let params_ok = if params_t.is_empty() || params_t.iter().any(|t| *t == Type::Unknown) {
+                    true
+                } else if params_s.len() == params_t.len() {
+                    params_s.iter().zip(params_t.iter()).all(|(s, t)| {
+                        if *t == Type::Unknown {
+                            true
+                        } else {
+                            s.can_cast_to(t)
+                        }
+                    })
+                } else {
+                    false
+                };
+                let ret_ok = if **ret_t == Type::Unknown {
+                    true
+                } else {
+                    ret_s.can_cast_to(ret_t)
+                };
+                params_ok && ret_ok
+            }
             _ => self == target,
         }
     }

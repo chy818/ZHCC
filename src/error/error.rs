@@ -305,6 +305,12 @@ impl CodegenError {
     }
 }
 
+impl From<&'static str> for CodegenError {
+    fn from(s: &'static str) -> Self {
+        CodegenError::new(s)
+    }
+}
+
 /**
  * 错误报告
  */

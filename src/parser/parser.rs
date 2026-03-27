@@ -679,6 +679,14 @@ impl Parser {
         // 支持两种语法: 函数 主() 和 函数 主 函数()
         let _ = self.match_token(&TokenType::Keyword(Keyword::函数));
 
+        // 可选的泛型类型参数 <T, U>
+        let type_params = if self.check(&TokenType::小于) {
+            self.position += 1;
+            self.parse_type_parameter_list()?
+        } else {
+            Vec::new()
+        };
+
         // 参数列表
         let params = self.parse_parameter_list()?;
 
@@ -689,14 +697,67 @@ impl Parser {
         let body_span = self.current()
             .map(|t| t.span)
             .unwrap_or(Span::dummy());
-        
+
         self.expect(&TokenType::左花括号)?;
         let statements = self.parse_statement_list()?;
         self.expect(&TokenType::右花括号)?;
 
         let span = body_span; // TODO: 合并完整 span
 
-        Ok(Function::new(name, params, return_type, BlockStmt::new(statements, span), span))
+        Ok(Function::with_type_params(
+            name,
+            type_params,
+            params,
+            return_type,
+            BlockStmt::new(statements, span),
+            span,
+        ))
+    }
+
+    /**
+     * 解析类型参数列表
+     * 类型参数列表 -> 类型参数 (',' 类型参数)* '>'
+     */
+    fn parse_type_parameter_list(&mut self) -> Result<Vec<TypeParam>, ParserError> {
+        let mut type_params = Vec::new();
+
+        loop {
+            // 解析类型参数名（单个标识符，如 T, U, V）
+            let name = match self.current() {
+                Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                    literal.clone()
+                }
+                _ => {
+                    return Err(ParserError::unexpected_token(
+                        "类型参数名",
+                        &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                        self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                    ));
+                }
+            };
+            self.position += 1;
+
+            type_params.push(TypeParam::new(name));
+
+            // 检查是否还有更多类型参数
+            if self.check(&TokenType::逗号) {
+                self.position += 1;
+                continue;
+            }
+
+            // 检查是否以 '>' 结束泛型参数列表
+            if self.check(&TokenType::大于) {
+                self.position += 1;
+                return Ok(type_params);
+            }
+
+            // 既不是逗号也不是 >，语法错误
+            return Err(ParserError::unexpected_token(
+                "',' 或 '>'",
+                &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                self.current().map(|t| t.span).unwrap_or(Span::dummy())
+            ));
+        }
     }
 
     /**
@@ -782,39 +843,61 @@ impl Parser {
         let base_type = match self.current() {
             Some(Token { token_type: TokenType::Keyword(Keyword::整数), .. }) => {
                 self.position += 1;
-                Type::Int
+                return Ok(Type::Int);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::长整数), .. }) => {
                 self.position += 1;
-                Type::Long
+                return Ok(Type::Long);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::浮点数), .. }) => {
                 self.position += 1;
-                Type::Float
+                return Ok(Type::Float);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::双精度), .. }) => {
                 self.position += 1;
-                Type::Double
+                return Ok(Type::Double);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::布尔), .. }) => {
                 self.position += 1;
-                Type::Bool
+                return Ok(Type::Bool);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::文本), .. }) => {
                 self.position += 1;
-                Type::String
+                return Ok(Type::String);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::字符), .. }) => {
                 self.position += 1;
-                Type::Char
+                return Ok(Type::Char);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::无返回), .. }) => {
                 self.position += 1;
-                Type::Void
+                return Ok(Type::Void);
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::指针), .. }) => {
                 self.position += 1;
-                Type::Pointer
+                return Ok(Type::Pointer);
+            }
+            Some(Token { token_type: TokenType::Keyword(Keyword::函数), .. }) => {
+                self.position += 1;
+                // 函数类型: 函数(参数类型列表) => 返回类型
+                // 或者 bare 函数 作为通用函数类型
+                if self.check(&TokenType::左圆括号) {
+                    self.expect(&TokenType::左圆括号)?;
+                    let mut param_types = Vec::new();
+                    if !self.check(&TokenType::右圆括号) {
+                        param_types.push(self.parse_type()?);
+                        while self.match_token(&TokenType::逗号) {
+                            param_types.push(self.parse_type()?);
+                        }
+                    }
+                    self.expect(&TokenType::右圆括号)?;
+                    self.expect(&TokenType::箭头)?;
+                    let return_type = Box::new(self.parse_type()?);
+                    return Ok(Type::Function(param_types, return_type));
+                } else {
+                    // bare 函数 - 作为通用函数类型（参数和返回类型未知）
+                    return Ok(Type::Function(Vec::new(), Box::new(Type::Unknown)));
+                }
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::列表), .. }) => {
                 self.position += 1;
@@ -1104,8 +1187,8 @@ impl Parser {
         // 消耗 '定义' 关键字
         self.position += 1;
 
-        // 可变修饰符
-        let _is_mutable = self.match_keyword(&Keyword::可变);
+        // 可变修饰符: 定义 可变 x = 1
+        let is_mutable = self.match_keyword(&Keyword::可变);
 
         // 变量名
         let name = match self.current() {
@@ -1140,8 +1223,8 @@ impl Parser {
 
         let span = start_span; // TODO: 合并完整 span
         
-        // 创建 LetStmt (注意: 当前 AST 没有 is_mutable 字段)
-        Ok(Stmt::Let(LetStmt::new(name, type_annotation, initializer, span)))
+        // 创建 LetStmt，传递 is_mutable 标志
+        Ok(Stmt::Let(LetStmt::new(name, type_annotation, initializer, is_mutable, span)))
     }
 
     /**
@@ -1402,10 +1485,12 @@ impl Parser {
      * 解析赋值表达式
      */
     fn parse_assignment_expression(&mut self) -> Result<Expr, ParserError> {
+        // 先解析可能的左侧（用于赋值表达式的左手边）
         let left = self.parse_or_expression()?;
 
         if self.match_token(&TokenType::赋值) {
-            let right = self.parse_assignment_expression()?;
+            // 解析右侧表达式（完整的表达式，包括二元操作符）
+            let right = self.parse_expression()?;
             let span = left.span().merge(right.span());
             return Ok(Expr::Binary(BinaryExpr::new(
                 BinaryOp::Assign,
@@ -1718,10 +1803,76 @@ impl Parser {
         let mut expr = self.parse_primary_expression()?;
 
         loop {
+            // 泛型函数调用: expr '<' types '>' '(' args ')'
+            if self.check(&TokenType::小于) {
+                let saved_pos = self.position;
+                self.position += 1; // 消耗 '<'
+
+                // 尝试解析类型参数列表
+                let mut type_args = Vec::new();
+                let mut parsed_successfully = true;
+
+                loop {
+                    if self.check(&TokenType::大于) {
+                        self.position += 1;
+                        break;
+                    }
+
+                    match self.parse_type() {
+                        Ok(t) => type_args.push(t),
+                        Err(_) => {
+                            parsed_successfully = false;
+                            break;
+                        }
+                    }
+
+                    if self.check(&TokenType::逗号) {
+                        self.position += 1;
+                        continue;
+                    } else if self.check(&TokenType::大于) {
+                        self.position += 1;
+                        break;
+                    } else {
+                        parsed_successfully = false;
+                        break;
+                    }
+                }
+
+                // 如果成功解析了泛型参数，并且后面跟着 '('，则是泛型函数调用
+                if parsed_successfully && !type_args.is_empty() && self.check(&TokenType::左圆括号) {
+                    // 解析函数参数
+                    self.position += 1; // 消耗 '('
+                    let mut arguments = Vec::new();
+
+                    if !self.check(&TokenType::右圆括号) {
+                        arguments.push(self.parse_expression()?);
+                        while self.match_token(&TokenType::逗号) {
+                            arguments.push(self.parse_expression()?);
+                        }
+                    }
+
+                    self.expect(&TokenType::右圆括号)?;
+                    let span = expr.span();
+
+                    // 创建带有类型参数的调用表达式
+                    let call_expr = CallExpr::new_with_type_args(
+                        Box::new(expr),
+                        arguments,
+                        type_args,
+                        span,
+                    );
+                    expr = Expr::Call(call_expr);
+                    continue;
+                } else {
+                    // 不是泛型调用，回退 position
+                    self.position = saved_pos;
+                }
+            }
+
             // 函数调用: expr '(' args ')'
             if self.match_token(&TokenType::左圆括号) {
                 let mut arguments = Vec::new();
-                
+
                 if !self.check(&TokenType::右圆括号) {
                     arguments.push(self.parse_expression()?);
                     while self.match_token(&TokenType::逗号) {
@@ -1787,13 +1938,68 @@ impl Parser {
 
             // Lambda 表达式: 函数(参数) => 表达式
             // 例如: 函数(x, y) => x + y
+            // 或: 函数(y: 整数) => y + 1
             TokenType::Keyword(Keyword::函数) => {
                 let span = token.span.clone();
                 self.expect(&TokenType::Keyword(Keyword::函数))?;
 
-                // 解析参数列表
+                // 解析参数列表（内联解析，不调用 parse_parameter_list 因为它会消耗 '('）
                 self.expect(&TokenType::左圆括号)?;
-                let params = self.parse_parameter_list()?;
+
+                let mut params = Vec::new();
+
+                // 如果下一个是 ')'，参数列表为空
+                if !self.check(&TokenType::右圆括号) {
+                    // 解析第一个参数（不带类型注解的简单参数）
+                    let param_name = match self.current() {
+                        Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                            literal.clone()
+                        }
+                        _ => {
+                            return Err(ParserError::unexpected_token(
+                                "参数名",
+                                &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                                self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                            ));
+                        }
+                    };
+                    self.position += 1;
+
+                    // 检查参数是否有类型注解
+                    let param_type = if self.match_token(&TokenType::冒号) {
+                        self.parse_type()?
+                    } else {
+                        Type::Int // 默认类型为整数
+                    };
+
+                    params.push(FunctionParam { name: param_name, param_type });
+
+                    // 解析剩余参数
+                    while self.match_token(&TokenType::逗号) {
+                        let param_name = match self.current() {
+                            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                                literal.clone()
+                            }
+                            _ => {
+                                return Err(ParserError::unexpected_token(
+                                    "参数名",
+                                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                                ));
+                            }
+                        };
+                        self.position += 1;
+
+                        let param_type = if self.match_token(&TokenType::冒号) {
+                            self.parse_type()?
+                        } else {
+                            Type::Int
+                        };
+
+                        params.push(FunctionParam { name: param_name, param_type });
+                    }
+                }
+
                 self.expect(&TokenType::右圆括号)?;
 
                 // 期望箭头符号 =>
