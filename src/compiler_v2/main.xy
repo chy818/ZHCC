@@ -29,7 +29,7 @@
  * 解析命令行选项
  */
 函数 parseArgs(argc: 整数, argv: 列表): CompileOptions {
-    定义 opts: CompileOptions
+    定义 可变 opts: CompileOptions
     opts.输入文件 = ""
     opts.输出文件 = ""
     opts.生成IR = 0
@@ -44,22 +44,22 @@
         返回 opts
     }
 
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 1
     当 i < argc 则 {
-        定义 arg: 文本
+        定义 可变 arg: 文本
         arg = 获取参数(i)
 
-        若 arg == "--help" 或 arg == "-h" 则 {
+        若 arg == "--help" || arg == "-h" 则 {
             opts.显示帮助 = 1
         } 否则 {
-            若 arg == "--version" 或 arg == "-v" 则 {
+            若 arg == "--version" || arg == "-v" 则 {
                 opts.显示版本 = 1
             } 否则 {
                 若 arg == "--ir" 则 {
                     opts.生成IR = 1
                 } 否则 {
-                    若 arg == "--run" 或 arg == "-r" 则 {
+                    若 arg == "--run" || arg == "-r" 则 {
                         opts.运行程序 = 1
                     } 否则 {
                         若 arg == "-o" 则 {
@@ -104,7 +104,7 @@
  * 获取文件扩展名
  */
 函数 getFileExtension(path: 文本): 文本 {
-    定义 ext: 文本
+    定义 可变 ext: 文本
     ext = ""
     若 path == "" 则 {
         返回 ext
@@ -116,7 +116,7 @@
  * 替换文件扩展名
  */
 函数 replaceExtension(path: 文本, newExt: 文本): 文本 {
-    定义 result: 文本
+    定义 可变 result: 文本
     result = path
     返回 result
 }
@@ -163,7 +163,7 @@
  * 报告词法错误
  */
 函数 reportLexerError(msg: 文本, line: 整数, col: 整数) {
-    定义 err: CompileError
+    定义 可变 err: CompileError
     err.阶段 = "词法分析"
     err.消息 = msg
     err.行号 = line
@@ -175,7 +175,7 @@
  * 报告语法错误
  */
 函数 reportParserError(msg: 文本, line: 整数, col: 整数) {
-    定义 err: CompileError
+    定义 可变 err: CompileError
     err.阶段 = "语法分析"
     err.消息 = msg
     err.行号 = line
@@ -187,7 +187,7 @@
  * 报告语义错误
  */
 函数 reportSemaError(msg: 文本, line: 整数, col: 整数) {
-    定义 err: CompileError
+    定义 可变 err: CompileError
     err.阶段 = "语义分析"
     err.消息 = msg
     err.行号 = line
@@ -199,7 +199,7 @@
  * 报告代码生成错误
  */
 函数 reportCodegenError(msg: 文本, line: 整数, col: 整数) {
-    定义 err: CompileError
+    定义 可变 err: CompileError
     err.阶段 = "代码生成"
     err.消息 = msg
     err.行号 = line
@@ -236,7 +236,7 @@
  * 创建默认优化选项
  */
 函数 createDefaultOptOptions(): OptimizationOptions {
-    定义 opts: OptimizationOptions
+    定义 可变 opts: OptimizationOptions
     opts.启用内联 = 1
     opts.内联阈值 = 50
     opts.启用常量折叠 = 1
@@ -250,7 +250,7 @@
  * 根据优化级别创建优化选项
  */
 函数 createOptOptionsFromLevel(level: 整数): OptimizationOptions {
-    定义 opts: OptimizationOptions
+    定义 可变 opts: OptimizationOptions
     opts.优化级别 = level
 
     若 level >= 1 则 {
@@ -286,7 +286,7 @@
 /**
  * 全局输出级别
  */
-定义 输出级别: OutputLevel = 0
+定义 可变 输出级别: OutputLevel = 0
 
 /**
  * 设置输出级别
@@ -345,7 +345,7 @@
  * 获取默认目标平台
  */
 函数 获取默认目标平台(): TargetPlatform {
-    定义 platform: TargetPlatform
+    定义 可变 platform: TargetPlatform
     platform.名称 = "x86_64-pc-windows-msvc"
     platform.架构 = "x86_64"
     platform.操作系统 = "windows"
@@ -357,7 +357,7 @@
  * 获取支持的目标平台列表
  */
 函数 获取支持的目标平台(): 列表 {
-    定义 platforms: 列表
+    定义 可变 platforms: 列表
     platforms = 列表()
     返回 platforms
 }
@@ -389,7 +389,7 @@
  * 创建默认调试选项
  */
 函数 createDefaultDebugOptions(): DebugOptions {
-    定义 opts: DebugOptions
+    定义 可变 opts: DebugOptions
     opts.启用调试信息 = 0
     opts.生成行号 = 1
     opts.生成变量名 = 1
@@ -401,7 +401,7 @@
  * 启用完整调试模式
  */
 函数 启用完整调试模式(): DebugOptions {
-    定义 opts: DebugOptions
+    定义 可变 opts: DebugOptions
     opts.启用调试信息 = 1
     opts.生成行号 = 1
     opts.生成变量名 = 1
@@ -428,7 +428,7 @@
  * 创建空统计信息
  */
 函数 createEmptyStats(): CompilerStats {
-    定义 stats: CompilerStats
+    定义 可变 stats: CompilerStats
     stats.总词元数 = 0
     stats.总AST节点数 = 0
     stats.总函数数 = 0
@@ -487,7 +487,7 @@
         返回 0
     }
 
-    若 opts.优化级别 < 0 或 opts.优化级别 > 3 则 {
+    若 opts.优化级别 < 0 || opts.优化级别 > 3 则 {
         打印("错误: 无效的优化级别 (0-3)")
         返回 0
     }
@@ -564,7 +564,7 @@
  * 创建失败结果
  */
 函数 createFailedResult(): CompileResult {
-    定义 result: CompileResult
+    定义 可变 result: CompileResult
     result.成功 = 0
     result.错误计数 = 1
     result.警告计数 = 0
@@ -577,7 +577,7 @@
  * 创建成功结果
  */
 函数 createSuccessResult(ir: 文本, errors: 整数, warnings: 整数): CompileResult {
-    定义 result: CompileResult
+    定义 可变 result: CompileResult
     result.成功 = 1
     result.错误计数 = errors
     result.警告计数 = warnings
@@ -591,73 +591,92 @@
 /**
  * 执行词法分析阶段
  */
-函数 runLexerStage(source: 文本): 整数 {
-    定义 stage: CompileStage
-    stage.name = "词法分析"
-    stage.status = 1
+函数 runLexerStage(source: 文本): 列表 {
+    打印("=== 词法分析 ===")
 
-    定义 tokens: 列表
-    tokens = lexer分析源码(source)
+    定义 可变 lex: Lexer
+    lex = lexerInit(source)
 
-    定义 tokenCount: 整数
-    tokenCount = 列表长度(tokens)
+    定义 可变 tokens: 列表
+    tokens = 列表()
 
-    stage.status = 2
-    打印("词法分析阶段: ")
-    打印(tokenCount)
+    定义 可变 tok: Token
+    tok.类型 = 0
+    tok.值 = ""
+    tok.行号 = 0
+    tok.列号 = 0
+    tok.开始位置 = 0
+    tok.结束位置 = 0
+
+    当 tok.类型 != 6 则 {
+        tok = lexerNextToken(lex)
+        若 tok.类型 == 7 则 {
+            跳过
+        }
+        若 tok.类型 != 6 则 {
+            tokens.追加(tok)
+        }
+    }
+
+    打印("词法分析完成，共识别 ")
+    打印(列表长度(tokens))
     打印(" 个 Token")
 
-    返回 tokenCount
+    返回 tokens
 }
 
 /**
  * 执行语法分析阶段
  */
-函数 runParserStage(source: 文本, tokens: 列表): 整数 {
-    定义 stage: CompileStage
-    stage.name = "语法分析"
-    stage.status = 1
+函数 runParserStage(tokens: 列表, source: 文本): AST节点 {
+    打印("=== 语法分析 ===")
 
-    定义 ast: AST节点
+    定义 可变 ast: AST节点
     ast = parser分析Tokens(tokens, source)
 
-    定义 funcCount: 整数
+    定义 可变 funcCount: 整数
     funcCount = 0
 
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
-    当 i < 列表长度(ast.children) 且 i < 100 则 {
-        定义 child: AST节点
+    当 i < 列表长度(ast.children) && i < 100 则 {
+        定义 可变 child: AST节点
         child = ast.children[i]
-        若 child.kind == 5 则 {
+        若 child.kind == 1 则 {
             funcCount = funcCount + 1
         }
         i = i + 1
     }
 
-    stage.status = 2
-    打印("语法分析阶段: ")
+    打印("语法分析完成，共解析 ")
     打印(funcCount)
     打印(" 个函数")
 
-    返回 funcCount
+    返回 ast
 }
 
 /**
  * 执行语义分析阶段
  */
 函数 runSemaStage(ast: AST节点): 整数 {
-    定义 stage: CompileStage
-    stage.name = "语义分析"
-    stage.status = 1
+    打印("=== 语义分析 ===")
 
-    定义 result: 整数
-    result = sema遍历AST(列表(), ast)
+    定义 可变 sema: Sema
+    sema.源码 = ""
+    sema.当前作用域 = 0
+    sema.作用域栈 = 列表()
+    sema.错误列表 = 列表()
+    sema.警告列表 = 列表()
+    sema.当前行号 = 0
+    sema.错误计数 = 0
+    sema.警告计数 = 0
+    sema.全局作用域 = 0
 
-    stage.status = 2
-    打印("语义分析阶段: ")
+    定义 可变 result: 整数
+    result = sema遍历AST(sema, ast)
+
     若 result == 0 则 {
-        打印("通过")
+        打印("语义分析通过")
     } 否则 {
         打印("发现 ")
         打印(result)
@@ -671,17 +690,14 @@
  * 执行代码生成阶段
  */
 函数 runCodegenStage(ast: AST节点): 文本 {
-    定义 stage: CompileStage
-    stage.name = "代码生成"
-    stage.status = 1
+    打印("=== 代码生成 ===")
 
-    定义 moduleName: 文本
-    moduleName = codegen遍历AST(ast)
+    定义 可变 ir: 文本
+    ir = codegen遍历AST(ast)
 
-    stage.status = 2
-    打印("代码生成阶段: 完成")
+    打印("代码生成完成")
 
-    返回 moduleName
+    返回 ir
 }
 
 /* ============ 主编译流程 ============ */
@@ -695,23 +711,20 @@
     打印("文件: ")
     打印(filePath)
 
-    定义 source: 文本
-    source = "函数 主(): 整数 { 返回 0 }"
+    定义 可变 source: 文本
+    source = "函数 主(): 整数 { 打印(\"Hello\") 返回 0 }"
 
-    定义 tokenCount: 整数
-    tokenCount = runLexerStage(source)
+    定义 可变 tokens: 列表
+    tokens = runLexerStage(source)
 
-    定义 funcCount: 整数
-    funcCount = runParserStage(source, 列表())
+    定义 可变 ast: AST节点
+    ast = runParserStage(tokens, source)
 
-    定义 astNodeCount: 整数
-    astNodeCount = funcCount * 10
+    定义 可变 semaResult: 整数
+    semaResult = runSemaStage(ast)
 
-    定义 semaResult: 整数
-    semaResult = runSemaStage(列表())
-
-    定义 irModule: 文本
-    irModule = runCodegenStage(列表())
+    定义 可变 ir: 文本
+    ir = runCodegenStage(ast)
 
     打印("")
     打印("=== 编译完成 ===")
@@ -764,7 +777,7 @@
  * 编译函数
  */
 函数 编译(filePath: 文本): 整数 {
-    定义 result: 整数
+    定义 可变 result: 整数
     result = compileFile(filePath)
     返回 result
 }
@@ -787,7 +800,7 @@
  * 创建空性能统计
  */
 函数 createEmptyPerfStats(): PerfStats {
-    定义 stats: PerfStats
+    定义 可变 stats: PerfStats
     stats.词法分析时间 = 0.0
     stats.语法分析时间 = 0.0
     stats.语义分析时间 = 0.0
@@ -846,11 +859,11 @@
  * 检查编译器选项一致性
  */
 函数 检查选项一致性(opts: CompileOptions): 整数 {
-    若 opts.生成IR == 1 且 opts.运行程序 == 1 则 {
+    若 opts.生成IR == 1 && opts.运行程序 == 1 则 {
         打印("警告: --ir 和 --run 不能同时使用")
         返回 0
     }
-    若 opts.输出文件 == "" 且 opts.运行程序 == 0 则 {
+    若 opts.输出文件 == "" && opts.运行程序 == 0 则 {
         打印("警告: 未指定输出文件，将使用默认输出")
     }
     返回 1
@@ -891,7 +904,7 @@
         打印("错误: 输入文件不存在: " + path)
         返回 0
     }
-    定义 ext: 文本
+    定义 可变 ext: 文本
     ext = 获取文件扩展名(path)
     若 ext != ".xy" 则 {
         打印("警告: 文件扩展名不是 .xy")
@@ -903,10 +916,10 @@
  * 生成输出文件名
  */
 函数 生成输出文件名(inputPath: 文本, 优化级别: 整数): 文本 {
-    定义 baseName: 文本
+    定义 可变 baseName: 文本
     baseName = 获取文件名前缀(inputPath)
 
-    定义 outputName: 文本
+    定义 可变 outputName: 文本
     outputName = baseName
 
     若 优化级别 >= 3 则 {
@@ -941,7 +954,7 @@
  * 获取支持的语言特性列表
  */
 函数 获取支持特性(): 列表 {
-    定义 features: 列表
+    定义 可变 features: 列表
     features = 列表()
     返回 features
 }
@@ -1013,7 +1026,7 @@
  * 创建诊断模式
  */
 函数 createDiagnosticMode(): DiagnosticMode {
-    定义 mode: DiagnosticMode
+    定义 可变 mode: DiagnosticMode
     mode.详细错误 = 0
     mode.显示警告 = 1
     mode.显示注释 = 0
@@ -1035,7 +1048,7 @@
  * 创建调试信息
  */
 函数 createDebugInfo(): DebugInfo {
-    定义 info: DebugInfo
+    定义 可变 info: DebugInfo
     info.包含调试信息 = 0
     info.调试级别 = 0
     info.源映射 = 0
@@ -1058,7 +1071,7 @@
  * 创建后端选项
  */
 函数 createBackendOptions(): BackendOptions {
-    定义 opts: BackendOptions
+    定义 可变 opts: BackendOptions
     opts.使用LLVM = 1
     opts.生成汇编 = 0
     opts.生成目标文件 = 1
@@ -1124,7 +1137,7 @@
  * 创建缓存选项
  */
 函数 createCacheOptions(): CacheOptions {
-    定义 opts: CacheOptions
+    定义 可变 opts: CacheOptions
     opts.启用缓存 = 0
     opts.缓存目录 = ""
     opts.最大缓存大小 = 1073741824
@@ -1146,7 +1159,7 @@
  * 创建警告选项
  */
 函数 createWarningOptions(): WarningOptions {
-    定义 opts: WarningOptions
+    定义 可变 opts: WarningOptions
     opts.所有警告 = 0
     opts.警告视为错误 = 0
     opts.未使用变量 = 1
@@ -1159,9 +1172,9 @@
  * 编译预估时间
  */
 函数 预估编译时间(sourceSize: 整数): 浮点数 {
-    定义 baseTime: 浮点数
+    定义 可变 baseTime: 浮点数
     baseTime = 0.001
-    定义 sizeFactor: 浮点数
+    定义 可变 sizeFactor: 浮点数
     sizeFactor = 0.0001
     返回 baseTime + (整数转浮点数(sourceSize) * sizeFactor)
 }
@@ -1170,7 +1183,7 @@
  * 检查编译器资源限制
  */
 函数 检查资源限制(): 整数 {
-    定义 memory: 整数
+    定义 可变 memory: 整数
     memory = 获取系统可用内存()
 
     若 memory < 1073741824 则 {
@@ -1193,12 +1206,12 @@
  * 打印进度条
  */
 函数 打印进度条(progress: 整数): 无返回 {
-    定义 bar: 文本
+    定义 可变 bar: 文本
     bar = ""
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
 
-    当 i < 50 且 i < progress / 2 则 {
+    当 i < 50 && i < progress / 2 则 {
         bar = bar + "="
         i = i + 1
     }
@@ -1230,7 +1243,7 @@
  * 创建编译报告
  */
 函数 createCompileReport(): CompileReport {
-    定义 report: CompileReport
+    定义 可变 report: CompileReport
     report.总时间 = 0.0
     report.阶段时间 = 列表()
     report.错误数 = 0
@@ -1276,7 +1289,7 @@
  * 获取编译器版本信息
  */
 函数 getCompilerVersionInfo(): VersionInfo {
-    定义 info: VersionInfo
+    定义 可变 info: VersionInfo
     info.主版本 = 0
     info.次版本 = 2
     info.修订版本 = 0
@@ -1311,7 +1324,7 @@
  * 编译器支持的目标平台列表
  */
 函数 获取支持的目标平台(): 列表 {
-    定义 platforms: 列表
+    定义 可变 platforms: 列表
     platforms = 列表()
     platforms.追加("x86_64-pc-windows-gnu")
     platforms.追加("x86_64-unknown-linux-gnu")
@@ -1324,10 +1337,10 @@
  * 检查目标平台是否支持
  */
 函数 isTargetSupported(target: 文本): 整数 {
-    定义 supported: 列表
+    定义 可变 supported: 列表
     supported = 获取支持的目标平台()
 
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
     当 i < 列表长度(supported) 则 {
         若 supported[i] == target 则 {

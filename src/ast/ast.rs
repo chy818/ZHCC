@@ -4,7 +4,7 @@
  * @description 定义支持中文标识符的基础 AST 节点结构
  */
 
-use crate::lexer::token::{TokenType, Span};
+use crate::lexer::token::{Token, TokenType, Span};
 
 /**
  * AST 节点基 trait
@@ -988,6 +988,9 @@ pub enum Type {
     /// Future 类型 (异步操作的结果)
     /// 例如: Future<整数> 表示返回整数的异步操作
     Future(Box<Type>),
+    /// 任意类型 (用于异构列表)
+    /// 可以存储任何类型的值，包括自定义结构体
+    Any,
 }
 
 /**
@@ -1204,22 +1207,38 @@ pub struct Module {
     pub type_aliases: Vec<TypeAlias>,
     pub constants: Vec<ConstantDef>,
     pub extern_functions: Vec<ExternFunction>,
+    pub macros: Vec<MacroDef>,
     pub span: Span,
 }
 
 impl Module {
     pub fn new(functions: Vec<Function>, span: Span) -> Self {
-        Self { 
+        Self {
             imports: Vec::new(),
-            functions, 
+            functions,
             structs: Vec::new(),
             enums: Vec::new(),
             type_aliases: Vec::new(),
             constants: Vec::new(),
             extern_functions: Vec::new(),
-            span 
+            macros: Vec::new(),
+            span
         }
     }
+}
+
+/**
+ * 宏定义 (AST 节点)
+ */
+#[derive(Debug, Clone)]
+pub struct MacroDef {
+    /// 宏名称
+    pub name: String,
+    /// 宏参数
+    pub params: Vec<String>,
+    /// 宏体 Token 列表
+    pub body: Vec<Token>,
+    pub span: Span,
 }
 
 /**

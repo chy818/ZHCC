@@ -188,6 +188,13 @@ impl IncrementalCompiler {
     }
 
     /**
+     * 检查模块是否已注册
+     */
+    pub fn is_defined(&self, name: &str) -> bool {
+        self.modules.contains_key(name)
+    }
+
+    /**
      * 注册模块
      */
     pub fn register_module(&mut self, path: PathBuf, name: String, dependencies: Vec<String>) -> Result<(), IncrCompileError> {

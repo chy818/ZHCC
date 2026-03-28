@@ -543,13 +543,15 @@ impl TypeInferenceEngine {
             (Type::Char, Type::Char) => true,
             (Type::Void, Type::Void) => true,
             (Type::Unknown, Type::Unknown) => true,
+            // Any 与任何类型相等（支持异构列表）
+            (Type::Any, _) | (_, Type::Any) => true,
             (Type::List(e1), Type::List(e2)) => self.types_equal(e1, e2),
             (Type::Optional(i1), Type::Optional(i2)) => self.types_equal(i1, i2),
             (Type::Array(e1), Type::Array(e2)) => self.types_equal(e1, e2),
             (Type::TypeVar(n1), Type::TypeVar(n2)) => n1 == n2,
             (Type::Custom(n1), Type::Custom(n2)) => n1 == n2,
             (Type::Function(p1, r1), Type::Function(p2, r2)) => {
-                p1.len() == p2.len() 
+                p1.len() == p2.len()
                     && p1.iter().zip(p2.iter()).all(|(a, b)| self.types_equal(a, b))
                     && self.types_equal(r1, r2)
             }
@@ -636,6 +638,7 @@ impl TypeInferenceEngine {
             Type::Pointer => "空".to_string(),
             Type::Struct(name) => format!("{}()", name),
             Type::Future(inner) => format!("Future<{:?}>", inner),
+            Type::Any => "0".to_string(),  // Any 类型默认值为 0（空指针）
         }
     }
 }

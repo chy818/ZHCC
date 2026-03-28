@@ -28,5 +28,5 @@ pub use error::{
 };
 pub use repl::{Repl, ReplConfig, ReplContext, start_repl};
 pub use package::{PackageConfig, PackageManager, run_package_command};
-pub use macro_system::{MacroSystem, MacroDefinition, MacroCall, MacroExpansion, MacroError};
-pub use compiler::{IncrementalCompiler, IncrementalResult, FileChange, ModuleInfo, BuildStats};
+pub use macro_system::{MacroSystem, MacroExpander, MacroDefinition, MacroCall, MacroExpansion, MacroError, MacroStats, parse_macro_definition};
+pub use compiler::{Compiler, CompilerConfig, CompileResult, IncrementalCompiler, IncrementalResult, FileChange, ModuleInfo, BuildStats};

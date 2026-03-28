@@ -46,6 +46,7 @@ fn type_to_llvm(ty: &Type) -> &'static str {
         Type::TypeVar(_) => "i64",  // 类型变量暂时用 i64 代替
         Type::Function(_, _) => "i8*",  // 函数类型用指针（闭包结构体指针）
         Type::Future(_) => "i8*",   // Future 类型用指针表示
+        Type::Any => "i64",          // 任意类型用 i64 存储（指针值）
         Type::Custom(name) => {
             match name.as_str() {
                 _ => "i64",
@@ -811,6 +812,7 @@ impl CodeGenerator {
                 type_aliases: vec![],
                 constants: vec![],
                 extern_functions: vec![],
+                macros: vec![],
                 span: crate::lexer::token::Span::dummy(),
             });
         }
@@ -965,7 +967,13 @@ impl CodeGenerator {
         self.emit("declare i8* @str_concat(i8*, i8*)");
         self.emit("declare i8* @str_slice(i8*, i64, i64)");
         self.emit("declare i8* @str_contains(i8*, i8*)");
-        
+
+        // 字符分类函数
+        self.emit("declare i64 @is_space(i8*)");
+        self.emit("declare i64 @is_digit(i8*)");
+        self.emit("declare i64 @is_alpha(i8*)");
+        self.emit("declare i64 @is_alnum(i8*)");
+
         self.emit("");
         self.emit("; ==================== 用户函数 ====================");
         self.emit("");

@@ -4,7 +4,7 @@
  * @description 实现声明宏和过程宏，支持元编程能力
  *
  * 功能特性:
- * - 声明宏 (macro_rules!)
+ * - 声明宏 (宏 ... 展开 ...)
  * - 模式匹配和替换
  * - 卫生宏 (hygienic macros)
  * - 过程宏支持
@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::lexer::token::{Token, TokenType, Span};
+use crate::lexer::token::{Token, TokenType, Keyword, Span};
 
 /**
  * 宏定义
@@ -161,6 +161,33 @@ pub enum MacroExpansion {
 }
 
 /**
+ * 宏展开器 - 负责将宏集成到编译流程
+ */
+pub struct MacroExpander {
+    /// 宏系统
+    macro_system: MacroSystem,
+    /// 当前展开深度
+    expansion_depth: usize,
+    /// 最大展开深度
+    max_depth: usize,
+    /// 展开统计
+    stats: MacroStats,
+}
+
+/**
+ * 宏统计信息
+ */
+#[derive(Debug, Clone, Default)]
+pub struct MacroStats {
+    /// 展开次数
+    pub expansions: usize,
+    /// 定义数量
+    pub definitions: usize,
+    /// 错误数量
+    pub errors: usize,
+}
+
+/**
  * 宏系统
  */
 pub struct MacroSystem {
@@ -189,6 +216,136 @@ pub struct HygieneContext {
     pub generated_vars: Vec<String>,
     /// 生成的新标签
     pub generated_labels: Vec<String>,
+}
+
+impl MacroExpander {
+    /**
+     * 创建新的宏展开器
+     */
+    pub fn new() -> Self {
+        Self {
+            macro_system: MacroSystem::new(),
+            expansion_depth: 0,
+            max_depth: 64,
+            stats: MacroStats::default(),
+        }
+    }
+
+    /**
+     * 定义宏
+     */
+    pub fn define(&mut self, definition: MacroDefinition) -> Result<(), MacroError> {
+        self.stats.definitions += 1;
+        self.macro_system.define(definition)
+    }
+
+    /**
+     * 检查是否为宏调用
+     */
+    pub fn is_macro_call(&self, token: &Token) -> bool {
+        if let TokenType::标识符 = &token.token_type {
+            self.macro_system.is_defined(&token.literal)
+        } else {
+            false
+        }
+    }
+
+    /**
+     * 展开宏调用
+     */
+    pub fn expand(&mut self, call: &MacroCall) -> Result<MacroExpansion, MacroError> {
+        if self.expansion_depth >= self.max_depth {
+            return Err(MacroError::TooManyRecursions(self.max_depth));
+        }
+
+        self.expansion_depth += 1;
+        let result = self.macro_system.expand(call);
+        self.expansion_depth -= 1;
+
+        match &result {
+            Ok(MacroExpansion::Success(_)) => self.stats.expansions += 1,
+            Err(_) => self.stats.errors += 1,
+            _ => {}
+        }
+
+        result
+    }
+
+    /**
+     * 展开Token流中的所有宏调用
+     */
+    pub fn expand_tokens(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, MacroError> {
+        let mut result = Vec::new();
+        let mut i = 0;
+
+        while i < tokens.len() {
+            let token = &tokens[i];
+
+            // 检查是否为宏调用
+            if self.is_macro_call(token) {
+                // 收集宏参数 (简化：收集到分号或行尾)
+                let mut args = Vec::new();
+                i += 1;
+
+                // 收集括号内的参数
+                while i < tokens.len() {
+                    let arg_token = &tokens[i];
+                    if let TokenType::Keyword(Keyword::宏) = &arg_token.token_type {
+                        break;
+                    }
+                    args.push(arg_token.clone());
+                    i += 1;
+                }
+
+                // 创建宏调用并展开
+                let call = MacroCall {
+                    name: token.literal.clone(),
+                    args,
+                    span: token.span.clone(),
+                    hygiene_context: self.macro_system.current_hygiene,
+                };
+
+                match self.expand(&call)? {
+                    MacroExpansion::Success(expanded) => {
+                        // 将展开结果添加到结果中
+                        result.extend(expanded);
+                    }
+                    MacroExpansion::WaitingForMore => {
+                        // 需要更多输入，暂不处理
+                        result.push(token.clone());
+                    }
+                    MacroExpansion::Error(msg) => {
+                        return Err(MacroError::ExpansionError(msg));
+                    }
+                }
+            } else {
+                result.push(token.clone());
+                i += 1;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /**
+     * 获取统计信息
+     */
+    pub fn get_stats(&self) -> &MacroStats {
+        &self.stats
+    }
+
+    /**
+     * 重置统计
+     */
+    pub fn reset_stats(&mut self) {
+        self.stats = MacroStats::default();
+    }
+}
+
+impl Default for MacroExpander {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MacroSystem {
@@ -372,6 +529,94 @@ impl MacroSystem {
 }
 
 /**
+ * 解析宏定义
+ * 语法: 宏 宏名称 (参数) 展开 { 模板 }
+ */
+pub fn parse_macro_definition(tokens: &[Token], start: usize) -> Result<(MacroDefinition, usize), MacroError> {
+    let mut pos = start;
+
+    // 跳过 '宏' 关键字
+    if let TokenType::Keyword(Keyword::宏) = &tokens[pos].token_type {
+        pos += 1;
+    } else {
+        return Err(MacroError::InvalidDefinition("期望 '宏' 关键字".to_string()));
+    }
+
+    // 获取宏名称
+    let name = match &tokens[pos].token_type {
+        TokenType::标识符 => tokens[pos].literal.clone(),
+        _ => return Err(MacroError::InvalidDefinition("期望宏名称".to_string())),
+    };
+    pos += 1;
+
+    // 解析参数列表
+    let mut params = Vec::new();
+    if let TokenType::左圆括号 = &tokens[pos].token_type {
+        pos += 1;
+        while pos < tokens.len() && !matches!(tokens[pos].token_type, TokenType::右圆括号) {
+            if let TokenType::标识符 = &tokens[pos].token_type {
+                params.push(MacroParam {
+                    pattern: MacroPattern::Expr,
+                    name: tokens[pos].literal.clone(),
+                    is_varargs: false,
+                });
+            }
+            pos += 1;
+        }
+        if pos < tokens.len() {
+            pos += 1; // 跳过右括号
+        }
+    }
+
+    // 跳过 '展开' 关键字
+    if pos < tokens.len() {
+        if let TokenType::Keyword(Keyword::展开) = &tokens[pos].token_type {
+            pos += 1;
+        }
+    }
+
+    // 解析模板 (简单实现：收集到配对的右花括号)
+    let mut template = Vec::new();
+    let mut brace_count = 0;
+    let mut started = false;
+
+    while pos < tokens.len() {
+        let token = &tokens[pos];
+        if matches!(token.token_type, TokenType::左花括号) {
+            brace_count += 1;
+            started = true;
+        }
+        if matches!(token.token_type, TokenType::右花括号) {
+            if brace_count == 0 && started {
+                break;
+            }
+            brace_count -= 1;
+            if brace_count == 0 {
+                break;
+            }
+        }
+        if started {
+            template.push(token.clone());
+        }
+        pos += 1;
+    }
+
+    let definition = MacroDefinition {
+        name,
+        params,
+        body: vec![MacroRule {
+            matcher: Vec::new(),
+            template,
+            is_export: false,
+        }],
+        hygiene: MacroHygiene::Full,
+        span: Span::dummy(),
+    };
+
+    Ok((definition, pos))
+}
+
+/**
  * 宏错误
  */
 #[derive(Debug, Clone)]
@@ -477,6 +722,50 @@ mod tests {
         };
 
         let result = system.expand(&call);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_macro_expander() {
+        let mut expander = MacroExpander::new();
+
+        let macro_def = MacroDefinition {
+            name: "打印".to_string(),
+            params: vec![crate::macro_system::MacroParam {
+                pattern: MacroPattern::Expr,
+                name: "值".to_string(),
+                is_varargs: false,
+            }],
+            body: vec![MacroRule {
+                matcher: vec![],
+                template: vec![],
+                is_export: false,
+            }],
+            hygiene: MacroHygiene::Full,
+            span: Span::dummy(),
+        };
+
+        expander.define(macro_def).unwrap();
+
+        let tokens = vec![
+            Token {
+                token_type: TokenType::标识符,
+                literal: "打印".to_string(),
+                span: Span::dummy(),
+            },
+            Token {
+                token_type: TokenType::左圆括号,
+                literal: "(".to_string(),
+                span: Span::dummy(),
+            },
+            Token {
+                token_type: TokenType::右圆括号,
+                literal: ")".to_string(),
+                span: Span::dummy(),
+            },
+        ];
+
+        let result = expander.expand_tokens(tokens);
         assert!(result.is_ok());
     }
 }

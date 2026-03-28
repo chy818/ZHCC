@@ -29,7 +29,7 @@
  * 打印整数
  */
 函数 打印整数(数值: 整数): 无返回 {
-    定义 tmp: 文本
+    定义 可变 tmp: 文本
     tmp = 整数转文本(数值)
     打印("runtime: " + tmp)
 }
@@ -148,7 +148,7 @@
  * 创建新列表
  */
 函数 列表(): 列表 {
-    定义 lst: 列表
+    定义 可变 lst: 列表
     lst = 创建列表(0)
     返回 lst
 }
@@ -158,7 +158,7 @@
  */
 函数 创建列表(容量: 整数): 列表 {
     打印("runtime: 创建列表")
-    定义 lst: 列表
+    定义 可变 lst: 列表
     lst = 列表()
     返回 lst
 }
@@ -180,7 +180,7 @@
 /**
  * 获取列表元素
  */
-函数 列表获取(列表: 列表, 索引: 整数): 整数 {
+函数 列表获取(列表: 列表, 索引: 整数): 任意 {
     返回 0
 }
 
@@ -760,7 +760,7 @@
  * 字符串分割
  */
 函数 文本分割(s: 文本, 分隔符: 文本): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     若 s == "" 则 { 返回 result }
     返回 result
@@ -821,8 +821,8 @@
  * 正则匹配
  */
 函数 正则匹配(pattern: 文本, text: 文本): 布尔 {
-    若 pattern == "" 或 text == "" 则 { 返回 假 }
-    打印("runtime: 正则匹配 - " + pattern + " 与 " + text)
+    若 pattern == "" || text == "" 则 { 返回 假 }
+    打印("runtime: 正则匹配 - " + pattern + " && " + text)
     返回 假
 }
 
@@ -830,7 +830,7 @@
  * 正则搜索
  */
 函数 正则搜索(pattern: 文本, text: 文本): 文本 {
-    若 pattern == "" 或 text == "" 则 { 返回 "" }
+    若 pattern == "" || text == "" 则 { 返回 "" }
     打印("runtime: 正则搜索 - " + pattern + " 在 " + text)
     返回 ""
 }
@@ -848,7 +848,7 @@
  * 正则分割
  */
 函数 正则分割(text: 文本, pattern: 文本): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     若 text == "" 则 { 返回 result }
     打印("runtime: 正则分割")
@@ -1001,7 +1001,7 @@
  */
 函数 是绝对路径(path: 文本): 布尔 {
     若 path == "" 则 { 返回 假 }
-    若 path[0] == 67 且 path[1] == 58 则 { 返回 真 }  // C:
+    若 path[0] == 67 && path[1] == 58 则 { 返回 真 }  // C:
     返回 假
 }
 
@@ -1091,7 +1091,7 @@
  * 对象转字节数组
  */
 函数 转字节(obj: 整数): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     返回 result
 }
@@ -1111,9 +1111,9 @@
  * RGB 转十六进制颜色
  */
 函数 RGB转十六进制(r: 整数, g: 整数, b: 整数): 文本 {
-    若 r < 0 或 r > 255 则 { 返回 "#000000" }
-    若 g < 0 或 g > 255 则 { 返回 "#000000" }
-    若 b < 0 或 b > 255 则 { 返回 "#000000" }
+    若 r < 0 || r > 255 则 { 返回 "#000000" }
+    若 g < 0 || g > 255 则 { 返回 "#000000" }
+    若 b < 0 || b > 255 则 { 返回 "#000000" }
     返回 "#000000"
 }
 
@@ -1121,7 +1121,7 @@
  * 十六进制颜色转 RGB
  */
 函数 十六进制转RGB(hex: 文本): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     若 hex == "" 则 { 返回 result }
     返回 result
@@ -1439,7 +1439,7 @@
  * 字节数组转十六进制字符串
  */
 函数 字节转十六进制(bytes: 列表): 文本 {
-    定义 result: 文本
+    定义 可变 result: 文本
     result = ""
     若 列表长度(bytes) == 0 则 { 返回 result }
     打印("runtime: 字节转十六进制")
@@ -1450,7 +1450,7 @@
  * 十六进制字符串转字节数组
  */
 函数 十六进制转字节(hex: 文本): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     若 hex == "" 则 { 返回 result }
     打印("runtime: 十六进制转字节")
@@ -1461,8 +1461,8 @@
  * 字节数组比较
  */
 函数 字节比较(a: 列表, b: 列表): 整数 {
-    定义 lenA: 整数
-    定义 lenB: 整数
+    定义 可变 lenA: 整数
+    定义 可变 lenB: 整数
     lenA = 列表长度(a)
     lenB = 列表长度(b)
 
@@ -1475,7 +1475,7 @@
  * 字节数组复制
  */
 函数 字节复制(bytes: 列表): 列表 {
-    定义 result: 列表
+    定义 可变 result: 列表
     result = 列表()
     若 列表长度(bytes) == 0 则 { 返回 result }
     打印("runtime: 字节数组复制")
@@ -1531,9 +1531,9 @@
  */
 函数 循环左移(value: 整数, bits: 整数, width: 整数): 整数 {
     若 width <= 0 则 { 返回 value }
-    定义 shift: 整数
+    定义 可变 shift: 整数
     shift = bits % width
-    定义 result: 整数
+    定义 可变 result: 整数
     result = value
     返回 result
 }
@@ -1543,9 +1543,9 @@
  */
 函数 循环右移(value: 整数, bits: 整数, width: 整数): 整数 {
     若 width <= 0 则 { 返回 value }
-    定义 shift: 整数
+    定义 可变 shift: 整数
     shift = bits % width
-    定义 result: 整数
+    定义 可变 result: 整数
     result = value
     返回 result
 }
@@ -1569,14 +1569,14 @@
     打印("runtime: rt_str_to_int")
     若 str == "" 则 { 返回 0 }
 
-    定义 result: 整数
+    定义 可变 result: 整数
     result = 0
-    定义 negative: 整数
+    定义 可变 negative: 整数
     negative = 0
 
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
-    定义 ch: 文本
+    定义 可变 ch: 文本
     ch = 文本获取字符(str, i)
 
     若 ch == "-" 则 {
@@ -1586,9 +1586,9 @@
 
     当 i < 文本长度(str) 则 {
         ch = 文本获取字符(str, i)
-        定义 digit: 整数
+        定义 可变 digit: 整数
         digit = 字符编码(ch) - 48
-        若 digit >= 0 且 digit <= 9 则 {
+        若 digit >= 0 && digit <= 9 则 {
             result = result * 10 + digit
         }
         i = i + 1
@@ -1615,9 +1615,9 @@
  */
 函数 rt_int_to_str(n: 整数): 文本 {
     打印("runtime: rt_int_to_str")
-    定义 result: 文本
+    定义 可变 result: 文本
     result = ""
-    定义 negative: 整数
+    定义 可变 negative: 整数
     negative = 0
 
     若 n < 0 则 {
@@ -1625,14 +1625,14 @@
         n = 0 - n
     }
 
-    定义 digits: 列表
+    定义 可变 digits: 列表
     digits = 列表()
 
     若 n == 0 则 {
         digits.追加(0)
     } 否则 {
         当 n > 0 则 {
-            定义 digit: 整数
+            定义 可变 digit: 整数
             digit = n % 10
             digits.追加(digit)
             n = n / 10
@@ -1643,10 +1643,10 @@
         result = result + "-"
     }
 
-    定义 j: 整数
+    定义 可变 j: 整数
     j = 列表长度(digits) - 1
     当 j >= 0 则 {
-        定义 n: 整数
+        定义 可变 n: 整数
         n = digits[数字到整(j)]
         result = result + 整数转文本(n)
         j = j - 1
@@ -1767,7 +1767,7 @@
 /**
  * 内存比较
  */
-函数 rt_memcmp(ptr1: 整数, ptr2: 整数, size: 整数): 整数 {
+函数 rt_memcmp(ptr1: 整数, tmpPtr2: 整数, size: 整数): 整数 {
     打印("runtime: rt_memcmp")
     返回 0
 }
@@ -1788,7 +1788,7 @@
  * 数组越界检查
  */
 函数 rt_bounds_check(index: 整数, size: 整数): 无返回 {
-    若 index < 0 或 index >= size 则 {
+    若 index < 0 || index >= size 则 {
         打印("RUNTIME ERROR: 数组越界访问 index=")
         打印(index)
         打印(", size=")
@@ -1800,7 +1800,7 @@
  * 空指针检查
  */
 函数 rt_null_check(ptr: 整数): 无返回 {
-    若 ptr == 0 则 {
+    若 tmpPtr == 0 则 {
         打印("RUNTIME ERROR: 空指针解引用")
     }
 }
@@ -2004,13 +2004,13 @@
  * DJB2 哈希
  */
 函数 rt_hash_djb2(str: 文本): 整数 {
-    定义 hash: 整数
+    定义 可变 hash: 整数
     hash = 5381
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
 
     当 i < 文本长度(str) 则 {
-        定义 ch: 整数
+        定义 可变 ch: 整数
         ch = 字符编码(文本获取字符(str, i))
         hash = ((hash << 5) + hash) + ch
         i = i + 1
@@ -2023,13 +2023,13 @@
  * FNV-1a 哈希
  */
 函数 rt_hash_fnv1a(str: 文本): 整数 {
-    定义 hash: 整数
+    定义 可变 hash: 整数
     hash = 2166136261
-    定义 i: 整数
+    定义 可变 i: 整数
     i = 0
 
     当 i < 文本长度(str) 则 {
-        定义 ch: 整数
+        定义 可变 ch: 整数
         ch = 字符编码(文本获取字符(str, i))
         hash = hash # ch
         hash = hash * 16777619

@@ -87,11 +87,16 @@ pub enum Keyword {
     抛出,         // throw / raise
     最终,         // finally
 
+    // ========== 元编程 (Metaprogramming) ==========
+    宏,           // macro
+    展开,         // expand
+
     // ========== 复合数据类型 (Composite Types) ==========
     结构体,       // struct
     枚举,         // enum
     联合,         // union
     类型别名,     // type (别名)
+    任意,         // Any - 任意类型
 }
 
 /**
@@ -411,6 +416,14 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("throw", Keyword::抛出);
     map.insert("finally", Keyword::最终);
 
+    // ========== 元编程 ==========
+    map.insert("宏", Keyword::宏);
+    map.insert("展开", Keyword::展开);
+
+    // ========== 元编程 (英文别名) ==========
+    map.insert("macro", Keyword::宏);
+    map.insert("expand", Keyword::展开);
+
     // ========== 复合数据类型 ==========
     map.insert("结构体", Keyword::结构体);
     map.insert("枚举", Keyword::枚举);
@@ -423,8 +436,11 @@ static KEYWORD_MAP: LazyLock<std::collections::HashMap<&'static str, Keyword>> =
     map.insert("union", Keyword::联合);
     map.insert("type", Keyword::类型别名);
 
-    // ========== 布尔字面量 (特殊: 是字面量但用中文表示) ==========
-    // 真/假 在词法阶段作为标识符处理，解析阶段识别为布尔字面量
+    // ========== 任意类型 ==========
+    map.insert("任意", Keyword::任意);
+    map.insert("Any", Keyword::任意);
+
+    // ========== 布尔字面量 (特殊: 是字面量但用中文表示) ========== 真/假 在词法阶段作为标识符处理，解析阶段识别为布尔字面量
 
     map
 });

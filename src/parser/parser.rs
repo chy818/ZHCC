@@ -149,6 +149,7 @@ impl Parser {
         let mut type_aliases = Vec::new();
         let mut constants = Vec::new();
         let mut extern_functions = Vec::new();
+        let mut macros = Vec::new();
         let start_span = self.current()
             .map(|t| t.span)
             .unwrap_or(Span::dummy());
@@ -190,6 +191,11 @@ impl Parser {
                     Ok(e) => extern_functions.push(e),
                     Err(e) => return Err(e),
                 }
+            } else if self.check(&TokenType::Keyword(Keyword::宏)) {
+                match self.parse_macro() {
+                    Ok(m) => macros.push(m),
+                    Err(e) => return Err(e),
+                }
             } else {
                 // 跳过无法识别的声明，继续解析
                 self.advance();
@@ -207,6 +213,7 @@ impl Parser {
         module.type_aliases = type_aliases;
         module.constants = constants;
         module.extern_functions = extern_functions;
+        module.macros = macros;
         Ok(module)
     }
 
@@ -536,6 +543,76 @@ impl Parser {
             name,
             const_type,
             value,
+            span: start_span.merge(end_span),
+        })
+    }
+
+    /**
+     * 解析宏定义
+     * 语法: 宏 宏名称(参数) 展开 { 模板 }
+     */
+    fn parse_macro(&mut self) -> Result<MacroDef, ParserError> {
+        // 消耗 '宏' 关键字
+        self.expect(&TokenType::Keyword(Keyword::宏))?;
+
+        let start_span = self.previous().unwrap().span.clone();
+
+        // 宏名称
+        let name = match self.current() {
+            Some(Token { token_type: TokenType::标识符, literal, .. }) => {
+                literal.clone()
+            }
+            _ => {
+                return Err(ParserError::unexpected_token(
+                    "宏名称",
+                    &self.current().map(|t| t.literal.clone()).unwrap_or_default(),
+                    self.current().map(|t| t.span).unwrap_or(Span::dummy())
+                ));
+            }
+        };
+        self.advance();
+
+        // 解析参数列表
+        let mut params = Vec::new();
+        if self.match_token(&TokenType::左圆括号) {
+            while !self.check(&TokenType::右圆括号) && !self.check(&TokenType::文件结束) {
+                if let TokenType::标识符 = &self.current().unwrap().token_type {
+                    params.push(self.current().unwrap().literal.clone());
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenType::右圆括号)?;
+        }
+
+        // 期望 '展开' 关键字
+        self.expect(&TokenType::Keyword(Keyword::展开))?;
+
+        // 解析宏体 (到配对的右花括号)
+        let mut body = Vec::new();
+        self.expect(&TokenType::左花括号)?;
+
+        let mut brace_count = 1;
+        while brace_count > 0 && !self.check(&TokenType::文件结束) {
+            let token = self.current().unwrap();
+            if matches!(token.token_type, TokenType::左花括号) {
+                brace_count += 1;
+            } else if matches!(token.token_type, TokenType::右花括号) {
+                brace_count -= 1;
+                if brace_count == 0 {
+                    self.advance(); // 消耗最后的 }
+                    break;
+                }
+            }
+            body.push(self.advance().unwrap().clone());
+        }
+
+        let end_span = self.previous().unwrap().span.clone();
+        Ok(MacroDef {
+            name,
+            params,
+            body,
             span: start_span.merge(end_span),
         })
     }
@@ -873,6 +950,10 @@ impl Parser {
                 self.position += 1;
                 return Ok(Type::Void);
             }
+            Some(Token { token_type: TokenType::Keyword(Keyword::任意), .. }) => {
+                self.position += 1;
+                return Ok(Type::Any);
+            }
             Some(Token { token_type: TokenType::Keyword(Keyword::指针), .. }) => {
                 self.position += 1;
                 return Ok(Type::Pointer);
@@ -910,8 +991,8 @@ impl Parser {
                     self.expect(&TokenType::大于)?;
                     return Ok(Type::List(elem_type));
                 } else {
-                    // 无泛型参数，默认为整数列表
-                    Type::List(Box::new(Type::Int))
+                    // 无泛型参数，默认为任意类型列表（支持异构）
+                    Type::List(Box::new(Type::Any))
                 }
             }
             Some(Token { token_type: TokenType::Keyword(Keyword::或许), .. }) => {

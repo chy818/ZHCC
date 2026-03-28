@@ -109,6 +109,9 @@ pub struct SemanticAnalyzer {
     /// 函数签名表
     /// 存储所有已定义函数的签名信息
     function_signatures: std::collections::HashMap<String, FunctionSignature>,
+    /// 结构体定义表
+    /// 存储所有已定义结构体的字段信息
+    struct_definitions: std::collections::HashMap<String, crate::ast::StructDefinition>,
 }
 
 impl SemanticAnalyzer {
@@ -121,6 +124,7 @@ impl SemanticAnalyzer {
             import_stack: Vec::new(),
             type_var_bindings: std::collections::HashMap::new(),
             function_signatures: std::collections::HashMap::new(),
+            struct_definitions: std::collections::HashMap::new(),
         }
     }
 
@@ -374,6 +378,18 @@ impl SemanticAnalyzer {
                 false,
                 func.span.clone(),
             );
+            
+            // 同时存储函数签名（用于类型推断）
+            let param_types: Vec<Type> = func.params.iter()
+                .map(|p| p.param_type.clone())
+                .collect();
+            let signature = FunctionSignature {
+                param_types,
+                return_type: func.return_type.clone(),
+                is_generic: !func.type_params.is_empty(),
+                type_params: func.type_params.iter().map(|tp| tp.name.clone()).collect(),
+            };
+            self.function_signatures.insert(func.name.clone(), signature);
         }
 
         for struct_def in &imported_module.structs {
@@ -465,7 +481,7 @@ impl SemanticAnalyzer {
             self.define_symbol(
                 param.name.clone(),
                 param_type.clone(),
-                false,
+                true,  // 函数参数默认可变，支持函数式编程风格
                 Span::dummy(),
             );
         }
@@ -730,8 +746,16 @@ impl SemanticAnalyzer {
         // 列表函数
         self.define_symbol("创建列表".to_string(), Type::String, false, Span::dummy());
         self.define_symbol("列表添加".to_string(), Type::Int, false, Span::dummy());
-        self.define_symbol("列表获取".to_string(), Type::Int, false, Span::dummy());
+        self.define_symbol("列表获取".to_string(), Type::Any, false, Span::dummy());
         self.define_symbol("列表长度".to_string(), Type::Int, false, Span::dummy());
+        
+        // 添加列表函数的签名（用于类型推断）
+        self.function_signatures.insert("列表获取".to_string(), FunctionSignature {
+            param_types: vec![Type::List(Box::new(Type::Any)), Type::Int],
+            return_type: Type::Any,
+            is_generic: false,
+            type_params: vec![],
+        });
         
         // 控制台输入函数
         self.define_symbol("输入整数".to_string(), Type::Int, false, Span::dummy());
@@ -767,6 +791,8 @@ impl SemanticAnalyzer {
      */
     fn register_struct(&mut self, struct_def: &StructDefinition) -> Result<Type, Vec<TypeError>> {
         let struct_type = Type::Struct(struct_def.name.clone());
+        // 存储结构体定义
+        self.struct_definitions.insert(struct_def.name.clone(), struct_def.clone());
         if let Some(scope) = self.scopes.last_mut() {
             scope.add_type(&struct_def.name, struct_type.clone());
         }
@@ -977,22 +1003,36 @@ impl SemanticAnalyzer {
         match (target_type, source_type) {
             // 相同类型直接兼容
             (t1, t2) if t1 == t2 => true,
-            
+
             // Unknown 类型可以接受任何类型（用于自展）
             (Type::Unknown, _) | (_, Type::Unknown) => true,
-            
+
+            // Any 类型可以接受或转换为任何类型（支持异构列表）
+            (Type::Any, _) | (_, Type::Any) => true,
+
             // 整数类型兼容（包括不同位宽）
             (Type::Int, Type::Int) => true,
             (Type::Long, Type::Int) => true,
             (Type::Int, Type::Long) => true,
             (Type::Long, Type::Long) => true,
-            
+
             // 浮点类型兼容
             (Type::Float, Type::Float) => true,
             (Type::Double, Type::Float) => true,
             (Type::Float, Type::Double) => true,
             (Type::Double, Type::Double) => true,
-            
+
+            // 列表类型协变：如果元素类型兼容，则列表类型兼容
+            // 例如：List(Int) 可以赋值给 List(Any)
+            (Type::List(target_elem), Type::List(source_elem)) => {
+                self.is_type_compatible(target_elem, source_elem)
+            }
+
+            // Optional 类型协变
+            (Type::Optional(target_inner), Type::Optional(source_inner)) => {
+                self.is_type_compatible(target_inner, source_inner)
+            }
+
             // 其他情况不兼容
             _ => false,
         }
@@ -1056,11 +1096,16 @@ impl SemanticAnalyzer {
             }
             Expr::IndexAccess(index) => {
                 // 分析被索引的对象
-                let _obj_type = self.analyze_expression(&index.object)?;
+                let obj_type = self.analyze_expression(&index.object)?;
                 // 分析索引表达式
                 self.analyze_expression(&index.index)?;
-                // 索引访问返回元素类型（简化处理，返回整数）
-                Ok(Type::Int)
+                // 索引访问返回元素类型
+                match obj_type {
+                    Type::List(elem_type) => Ok(*elem_type),
+                    Type::String => Ok(Type::Int),  // 字符串索引返回字符编码
+                    Type::Array(elem_type) => Ok(*elem_type),
+                    _ => Ok(Type::Any),  // 默认返回 Any 类型
+                }
             }
             Expr::Await(await_expr) => {
                 // 分析被等待的表达式
@@ -1258,6 +1303,14 @@ impl SemanticAnalyzer {
                     // 有一个操作数是 Unknown，返回 Unknown 让编译器继续
                     return Ok(Type::Unknown);
                 }
+                // Any 类型可以与任何数值类型运算
+                if left_type == Type::Any || right_type == Type::Any {
+                    // 如果有一个是 Any，返回另一个类型（或 Int 作为默认）
+                    if left_type == Type::Any && right_type == Type::Any {
+                        return Ok(Type::Int);
+                    }
+                    return Ok(if left_type == Type::Any { right_type } else { left_type });
+                }
                 if left_type != right_type {
                     return Err(vec![TypeError {
                         code: "CCAS-T003".to_string(),
@@ -1397,6 +1450,10 @@ impl SemanticAnalyzer {
                     // 打印函数，返回 Void
                     return Ok(Type::Void);
                 }
+                "列表获取" | "列表长度" | "列表添加" => {
+                    // 列表内置函数
+                    return Ok(Type::Any);
+                }
                 _ => {}
             }
 
@@ -1422,6 +1479,11 @@ impl SemanticAnalyzer {
                 // 没有找到函数签名，使用第一个类型参数作为返回类型
                 let return_type = call.type_args[0].clone();
                 return Ok(return_type);
+            }
+
+            // 先查找函数签名表（用于获取正确的返回类型）
+            if let Some(signature) = self.function_signatures.get(&ident.name) {
+                return Ok(signature.return_type.clone());
             }
 
             // 查找符号
@@ -1489,20 +1551,32 @@ impl SemanticAnalyzer {
     fn analyze_member_expression(&mut self, member: &MemberAccessExpr) -> Result<Type, Vec<TypeError>> {
         // 分析对象表达式
         let object_type = self.analyze_expression(&member.object)?;
-        
+
+        // 获取成员名称
+        let member_name = &member.member;
+
         // 检查是否是结构体类型
-        if let Type::Struct(struct_name) = &object_type {
-            // 查找结构体定义
-            if let Some(scope) = self.scopes.last() {
-                if let Some(_struct_type) = scope.lookup_type(struct_name, &self.scopes) {
-                    // 结构体类型已注册，简化处理返回整数
-                    return Ok(Type::Int);
+        match &object_type {
+            Type::Struct(struct_name) | Type::Custom(struct_name) => {
+                // 查找结构体定义
+                if let Some(struct_def) = self.struct_definitions.get(struct_name) {
+                    // 查找字段类型
+                    for field in &struct_def.fields {
+                        if &field.name == member_name {
+                            return Ok(field.field_type.clone());
+                        }
+                    }
+                    // 字段未找到，返回 Any
+                    return Ok(Type::Any);
                 }
+                // 结构体定义未找到，返回 Any
+                Ok(Type::Any)
+            }
+            _ => {
+                // 非结构体类型，返回 Any
+                Ok(Type::Any)
             }
         }
-        
-        // 简化处理：返回整数类型
-        Ok(Type::Int)
     }
 }
 
@@ -1523,6 +1597,15 @@ trait TypeExt {
 
 impl TypeExt for Type {
     fn can_cast_to(&self, target: &Type) -> bool {
+        // Any 类型可以接受或转换为任何类型（支持异构列表）
+        // 这个规则必须在最前面，确保优先匹配
+        if matches!(target, Type::Any) {
+            return true;
+        }
+        if matches!(self, Type::Any) {
+            return true;
+        }
+
         match (self, target) {
             (Type::Int, Type::Long) => true,
             (Type::Int, Type::Float) => true,

@@ -89,6 +89,30 @@ void print_bool(int val) {
     printf("%s", val ? "true" : "false");
 }
 
+/* Character classification functions */
+int is_space(void* ch_ptr) {
+    if (!ch_ptr) return 0;
+    char ch = *((char*)ch_ptr);
+    return (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') ? 1 : 0;
+}
+
+int is_digit(void* ch_ptr) {
+    if (!ch_ptr) return 0;
+    char ch = *((char*)ch_ptr);
+    return (ch >= '0' && ch <= '9') ? 1 : 0;
+}
+
+int is_alpha(void* ch_ptr) {
+    if (!ch_ptr) return 0;
+    char ch = *((char*)ch_ptr);
+    return ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_') ? 1 : 0;
+}
+
+int is_alnum(void* ch_ptr) {
+    if (!ch_ptr) return 0;
+    return (is_alpha(ch_ptr) || is_digit(ch_ptr)) ? 1 : 0;
+}
+
 /* String functions */
 int64_t rt_string_len(void* str) {
     if (!str) return 0;
