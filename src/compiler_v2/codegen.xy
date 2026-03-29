@@ -4,9 +4,9 @@
  * @description 生成 LLVM IR 指令，实现真实 AST 遍历
  */
 
-引入 "src/compiler_v2/parser.xy"
-引入 "src/compiler_v2/sema.xy"
-引入 "src/compiler_v2/runtime.xy"
+// 引入 "src/compiler_v2/parser.xy"  // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/sema.xy"    // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/runtime.xy" // 暂时注释，独立编译测试
 
 /* ============ Codegen 结构 ============ */
 

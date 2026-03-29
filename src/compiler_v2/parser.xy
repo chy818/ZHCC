@@ -4,7 +4,7 @@
  * @description 递归下降解析器，实现表达式、语句、函数的解析
  */
 
-引入 "src/compiler_v2/runtime.xy"
+// 引入 "src/compiler_v2/runtime.xy"  // 暂时注释，独立编译测试
 
 /* ============ Token 类型 (与 lexer 一致) ============ */
 

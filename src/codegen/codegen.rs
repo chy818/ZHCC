@@ -462,29 +462,36 @@ impl CodeGenerator {
         if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             name.to_string()
         } else {
-            // 转义内部字符
-            let escaped = name
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            format!("\"{}\"", escaped)
+            // 将非 ASCII 字符转换为 _uXXXX 格式
+            let mut result = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if i == 0 && c.is_ascii_digit() {
+                    // 标识符不能以数字开头，添加前缀
+                    result.push('_');
+                }
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    result.push(c);
+                } else {
+                    // 将非 ASCII 字符转换为 _uXXXX 格式
+                    let code = c as u32;
+                    result.push_str(&format!("_u{:04x}", code));
+                }
+            }
+            result
         }
     }
 
     /**
      * 生成 LLVM 函数声明名（不带 @ 前缀）
-     * 中文函数名需要用引号包裹
+     * 使用 escape_llvm_ident 确保 LLVM 兼容
      */
     fn emit_func_decl(&self, name: &str) -> String {
-        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            name.to_string()
-        } else {
-            format!("\"{}\"", name)
-        }
+        self.escape_llvm_ident(name)
     }
 
     /**
      * 翻译函数名（兼容内置函数）
-     * 优先使用已知映射，否则使用 escape_llvm_ident
+     * 优先使用已知映射，所有结果都确保 LLVM 兼容
      */
     fn translate_func_name(&self, name: &str) -> String {
         // 已知内置函数映射
@@ -535,12 +542,12 @@ impl CodeGenerator {
             "是字母数字" => Some("is_alnum"),
             "扫描标识符" => Some("scan_identifier"),
             "词法分析" => Some("lex"),
-            "主" => Some("主"),  // 不翻译，保留中文用于 IR
             _ => None,
         };
         
         if let Some(translation) = known_translation {
-            return translation.to_string();
+            // 确保翻译结果也是 LLVM 兼容的
+            return self.escape_llvm_ident(translation);
         }
         
         // 未知的函数名，使用转义
@@ -1213,23 +1220,24 @@ impl CodeGenerator {
     /**
      * 生成 main 入口点包装函数
      * 规范要求：
-     * - 若 主 返回 空: call @"主"(); ret i32 0
-     * - 若 主 返回 整数: %ret = call @"主"(); ret i32 (i32 %ret)
+     * - 若 主 返回 空: call @转义后的主(); ret i32 0
+     * - 若 主 返回 整数: %ret = call @转义后的主(); ret i32 (i32 %ret)
      * - 若 主 返回其他: 编译错误（在此阶段不处理）
      */
     fn generate_main_wrapper(&mut self, return_type: &Type) {
+        let translated_main = self.translate_func_name("主");
         self.emit("define i32 @main() {");
         
         match return_type {
             Type::Void => {
                 // 情形 A: 返回空
-                self.emit("  call void @\"主\"()");
+                self.emit(&format!("  call void @{}()", translated_main));
                 self.emit("  ret i32 0");
             }
             Type::Int | Type::Long => {
                 // 情形 B: 返回整数
                 let llvm_type = type_to_llvm(return_type);
-                self.emit(&format!("  %ret = call {} @\"主\"()", llvm_type));
+                self.emit(&format!("  %ret = call {} @{}()", llvm_type, translated_main));
                 // 将 i64 截断为 i32
                 self.emit("  %trunc = trunc i64 %ret to i32");
                 self.emit("  ret i32 %trunc");
@@ -1420,14 +1428,8 @@ impl CodeGenerator {
         // 翻译函数名
         let llvm_func_name = self.translate_func_name(&func_name);
 
-        // 根据函数名是否包含非ASCII字符决定格式
-        let func_def = if func_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            // ASCII 函数名：直接使用
-            format!("define {} @{} ({}) {{", ret_type, llvm_func_name, params_str)
-        } else {
-            // 非ASCII 函数名：使用引号包裹
-            format!("define {} @\"{}\" ({}) {{", ret_type, func_name, params_str)
-        };
+        // 始终使用翻译后的函数名（已确保 LLVM 兼容）
+        let func_def = format!("define {} @{} ({}) {{", ret_type, llvm_func_name, params_str);
         self.emit(&func_def);
         self.emit(&format!("; 函数: {}", func.name));
 
@@ -2216,10 +2218,17 @@ impl CodeGenerator {
                     let result_val = self.new_label("member_val");
                     self.emit(&format!("%{} = load {}, {}* %{}", result_val, ptr_type, ptr_type, result_ptr));
 
-                    // 直接返回加载的值，类型保持一致：
-                    // - 列表/字符串字段返回 i8*
-                    // - 整数字段返回 i64
-                    Ok(result_val)
+                    // 列表/字符串字段返回指针值 (i8*)
+                    // 整数字段返回整数值 (i64)
+                    // 需要将 i8* 转换为 i64 以保持一致性（XY 中所有值都是 i64）
+                    if ptr_type == "i8*" {
+                        // 将 i8* 指针转换为 i64 存储
+                        let int_result = self.new_label("field_int");
+                        self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int_result, result_val));
+                        Ok(int_result)
+                    } else {
+                        Ok(result_val)
+                    }
                 }
             }
             Expr::Grouped(expr) => {

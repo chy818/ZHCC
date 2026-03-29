@@ -4,11 +4,11 @@
  * @description 整合词法分析、语法解析、语义分析、代码生成流程
  */
 
-引入 "src/compiler_v2/lexer.xy"
-引入 "src/compiler_v2/parser.xy"
-引入 "src/compiler_v2/sema.xy"
-引入 "src/compiler_v2/codegen.xy"
-引入 "src/compiler_v2/runtime.xy"
+// 引入 "src/compiler_v2/lexer.xy"   // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/parser.xy"  // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/sema.xy"    // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/codegen.xy"  // 暂时注释，独立编译测试
+// 引入 "src/compiler_v2/runtime.xy" // 暂时注释，独立编译测试
 
 /* ============ 编译器选项结构 ============ */
 
