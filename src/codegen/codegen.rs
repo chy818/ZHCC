@@ -530,18 +530,8 @@ impl CodeGenerator {
             // 系统命令函数
             "执行命令" => Some("exec_cmd"),
             "命令输出" => Some("cmd_output"),
-            // 词法分析器用户函数
-            "是空格" => Some("is_space"),
-            "检查空格" => Some("check_space"),
-            "是数字" => Some("is_digit"),
-            "检查数字" => Some("check_digit"),
-            "是字母" => Some("is_alpha"),
-            "检查字母" => Some("check_alpha"),
-            "是关键字" => Some("is_keyword"),
-            "扫描数字" => Some("scan_digit"),
-            "是字母数字" => Some("is_alnum"),
-            "扫描标识符" => Some("scan_identifier"),
-            "词法分析" => Some("lex"),
+            // 注意：词法分析器辅助函数不进行特殊映射，保持原始中文名称
+            // 因为它们是在同一个模块中定义和调用的
             _ => None,
         };
         
@@ -844,7 +834,8 @@ impl CodeGenerator {
                             "打印" | "print" => "void".to_string(),
                             "整数转文本" | "int_to_str" => "i8*".to_string(),
                             "文本转整数" | "str_to_int" => "i64".to_string(),
-                            "文本长度" | "str_len" | "文本拼接" | "str_concat" => "i8*".to_string(),
+                            "文本长度" | "str_len" => "i64".to_string(),
+                            "文本拼接" | "str_concat" => "i8*".to_string(),
                             "文本获取字符" | "str_char_at" => "i8*".to_string(),
                             "文本切片" | "str_slice" => "i8*".to_string(),
                             "提取子串" | "substring" => "i8*".to_string(),
@@ -1102,10 +1093,14 @@ impl CodeGenerator {
         // 文本操作
         self.emit("declare i64 @rt_string_len(i8*)");
         self.emit("declare i8* @rt_string_char_at(i8*, i64)");
+        self.emit("declare i64 @rt_char_to_code(i8*)");
         
         // 控制台输入函数（使用 rt_ 前缀避免与 XY 函数冲突）
         self.emit("declare i64 @rt_input_int()");
         self.emit("declare i8* @rt_input_text()");
+        self.emit("declare i8* @rt_readline()");
+        // 报错函数
+        self.emit("declare void @rt_error(i8*)");
         
         // 打印整数/浮点/布尔函数 (ASCII 函数名)
         self.emit("declare void @print_int(i64)");
@@ -1141,11 +1136,7 @@ impl CodeGenerator {
         self.emit("declare i8* @str_slice(i8*, i64, i64)");
         self.emit("declare i8* @str_contains(i8*, i8*)");
 
-        // 字符分类函数
-        self.emit("declare i64 @is_space(i8*)");
-        self.emit("declare i64 @is_digit(i8*)");
-        self.emit("declare i64 @is_alpha(i8*)");
-        self.emit("declare i64 @is_alnum(i8*)");
+        // 字符分类函数（已在lexer.xy中实现，不需要declare）
 
         self.emit("");
         self.emit("; ==================== 用户函数 ====================");
@@ -1292,17 +1283,11 @@ impl CodeGenerator {
         if let Expr::Literal(lit_expr) = &constant.value {
             if let LiteralKind::String(s) = &lit_expr.kind {
                 // 直接使用字符串内容作为常量值
-                // LLVM IR 字符串需要转义: \, ", \n, \r, \t, \0
-                let escaped = s
-                    .replace("\\", "\\\\")
-                    .replace("\"", "\\22")
-                    .replace("\n", "\\0A")
-                    .replace("\r", "\\0D")
-                    .replace("\t", "\\09")
-                    .replace("\0", "\\00");
-                // 字符串长度 = 原始字符数 + 1 (null terminator)
-                // 转义序列在 LLVM IR 中仍然是单字节
-                let str_len = s.chars().count() + 1;
+                // 将所有字符转换为 UTF-8 字节的十六进制转义序列
+                // 这样可以正确处理中文字符和其他非 ASCII 字符
+                let escaped = Self::escape_string_to_llvm_ir(s);
+                // 字符串长度 = 原始 UTF-8 字节数
+                let str_len = s.as_bytes().len();
 
                 // 生成唯一的字符串常量标签
                 let str_label = format!("str_{}", self.label_counter);
@@ -1340,21 +1325,42 @@ impl CodeGenerator {
             .map(|(k, &(ref v, len))| (k.clone(), v.clone(), len))
             .collect();
 
-        for (label, content, _array_size) in constants {
-            // 计算 LLVM IR 中的实际字节数
-            // LLVM IR c"..." 中：
-            // - 普通字符是 1 字节
-            // - \XX 转义序列是 1 字节
-            let llvm_byte_len = Self::calculate_llvm_string_byte_len(&content);
+        for (label, content, array_size) in constants {
+            // 使用已经计算好的数组大小（原始 UTF-8 字节数）
             // c"..." 格式会自动添加 null 终止符，所以数组大小是内容长度 + 1
             self.emit(&format!("@{} = private constant [{} x i8] c\"{}\\00\"",
-                label, llvm_byte_len + 1, content));
+                label, array_size + 1, content));
         }
+    }
+
+    /**
+     * 将字符串转换为 LLVM IR 兼容的转义格式
+     * 所有字符都转换为 UTF-8 字节的十六进制转义序列
+     * 这样可以正确处理中文字符和其他非 ASCII 字符
+     */
+    fn escape_string_to_llvm_ir(s: &str) -> String {
+        let mut result = String::new();
+        for byte in s.as_bytes() {
+            match byte {
+                // 对于可打印的 ASCII 字符，直接使用
+                0x20..=0x21 | 0x23..=0x5B | 0x5D..=0x7E => {
+                    result.push(*byte as char);
+                }
+                // 对于双引号 (0x22) 和反斜杠 (0x5C)，需要转义
+                0x22 => result.push_str("\\22"),
+                0x5C => result.push_str("\\5C"),
+                // 对于其他所有字符（包括中文字符），使用十六进制转义
+                _ => result.push_str(&format!("\\{:02X}", byte)),
+            }
+        }
+        result
     }
 
     /**
      * 计算 LLVM IR 字符串的字节长度
      * LLVM IR 中 \XX 是单字节转义序列
+     * 注意：对于原始字符串（未转义前），我们需要计算其 UTF-8 字节数
+     * 但这里我们处理的是已经转义后的 LLVM IR 字符串
      */
     fn calculate_llvm_string_byte_len(s: &str) -> usize {
         let mut len = 0;
@@ -1382,7 +1388,10 @@ impl CodeGenerator {
                     len += 1;
                 }
             } else {
-                len += 1;
+                // 对于非转义字符，需要计算其 UTF-8 字节数
+                // 注意：这里处理的是已经转义后的字符串，所以非转义字符都是 ASCII
+                // 但为了安全起见，我们还是计算实际的 UTF-8 字节数
+                len += c.len_utf8();
             }
         }
         len
@@ -1706,8 +1715,22 @@ impl CodeGenerator {
                 // 类型匹配
                 self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
             } else {
-                // 类型不匹配，尝试转换
-                self.emit(&format!("store {} %{}, {}* %{}", init_type, value, var_type, alloca));
+                // 类型不匹配，进行转换
+                let converted_value = if var_type == "i8*" && init_type == "i64" {
+                    // i64 -> i8* 转换
+                    let ptr = self.new_label("ptr_cast");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, value));
+                    ptr
+                } else if init_type == "i8*" && var_type == "i64" {
+                    // i8* -> i64 转换
+                    let int = self.new_label("int_cast");
+                    self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int, value));
+                    int
+                } else {
+                    // 其他类型不匹配，使用原值
+                    value
+                };
+                self.emit(&format!("store {} %{}, {}* %{}", var_type, converted_value, var_type, alloca));
             }
         }
 
@@ -2201,9 +2224,19 @@ impl CodeGenerator {
                         self.infer_member_type(field_name)
                     };
 
-                    // 将对象值转换为 i8* 指针
-                    let ptr_val = self.new_label("ptr");
-                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr_val, object_val));
+                    // 获取对象类型
+                    let obj_type = self.infer_expression_type(&member.object);
+
+                    // 将对象值转换为 i8* 指针（仅当类型为 i64 时才需要转换）
+                    let ptr_val = if obj_type == "i64" {
+                        // 需要转换
+                        let ptr = self.new_label("ptr");
+                        self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, object_val));
+                        ptr
+                    } else {
+                        // 已经是 i8* 类型，直接使用
+                        object_val
+                    };
 
                     // 生成 GEP 指令获取字段指针
                     let result = self.new_label("member");
@@ -2218,17 +2251,10 @@ impl CodeGenerator {
                     let result_val = self.new_label("member_val");
                     self.emit(&format!("%{} = load {}, {}* %{}", result_val, ptr_type, ptr_type, result_ptr));
 
-                    // 列表/字符串字段返回指针值 (i8*)
-                    // 整数字段返回整数值 (i64)
-                    // 需要将 i8* 转换为 i64 以保持一致性（XY 中所有值都是 i64）
-                    if ptr_type == "i8*" {
-                        // 将 i8* 指针转换为 i64 存储
-                        let int_result = self.new_label("field_int");
-                        self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int_result, result_val));
-                        Ok(int_result)
-                    } else {
-                        Ok(result_val)
-                    }
+                    // 保持字段的原始类型
+                    // 列表/字符串字段保持 i8* 类型
+                    // 整数字段保持 i64 类型
+                    Ok(result_val)
                 }
             }
             Expr::Grouped(expr) => {
@@ -2557,32 +2583,26 @@ impl CodeGenerator {
                 // 生成索引表达式
                 let idx_val = self.generate_expression(&index.index)?;
 
-                // 根据对象类型生成不同的索引代码
-                if obj_type == "i8*" {
-                    // 字符串索引：使用 getelementptr 获取字节
-                    let ptr = self.new_label("str_ptr");
-                    self.emit(&format!("%{} = getelementptr i8, i8* %{}, i64 %{}", ptr, obj_val, idx_val));
-                    let byte_val = self.new_label("byte");
-                    self.emit(&format!("%{} = load i8, i8* %{}", byte_val, ptr));
-                    // 零扩展为 i64
-                    let result = self.new_label("char_val");
-                    self.emit(&format!("%{} = zext i8 %{} to i64", result, byte_val));
-                    Ok(result)
+                // 确保对象是 i8* 指针类型
+                let actual_obj_ptr = if obj_type == "i8*" {
+                    // 已经是字符串/指针类型，直接使用
+                    obj_val.clone()
                 } else {
-                    // 列表索引：调用 rt_list_get
-                    // 将对象值转换为指针
-                    let obj_ptr = self.new_label("obj_ptr");
-                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", obj_ptr, obj_val));
+                    // 需要转换为指针
+                    let converted_ptr = self.new_label("obj_ptr");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", converted_ptr, obj_val));
+                    converted_ptr
+                };
 
-                    // 调用列表获取函数
-                    let result = self.new_label("elem");
-                    self.emit(&format!("%{} = call i8* @rt_list_get(i8* %{}, i64 %{})", result, obj_ptr, idx_val));
-
-                    // 将结果转换为 i64
-                    let result_val = self.new_label("elem_val");
-                    self.emit(&format!("%{} = ptrtoint i8* %{} to i64", result_val, result));
-                    Ok(result_val)
-                }
+                // 字符串索引：使用 getelementptr 获取字节
+                let ptr = self.new_label("str_ptr");
+                self.emit(&format!("%{} = getelementptr i8, i8* %{}, i64 %{}", ptr, actual_obj_ptr, idx_val));
+                let byte_val = self.new_label("byte");
+                self.emit(&format!("%{} = load i8, i8* %{}", byte_val, ptr));
+                // 零扩展为 i64
+                let result = self.new_label("char_val");
+                self.emit(&format!("%{} = zext i8 %{} to i64", result, byte_val));
+                Ok(result)
             }
         }
     }
@@ -2603,16 +2623,11 @@ impl CodeGenerator {
             }
             LiteralKind::String(s) => {
                 // LLVM IR 中 c"..." 格式自动包含 null 终止符
-                // LLVM IR 字符串需要转义: \, ", \n, \r, \t, \0
-                let escaped = s
-                    .replace("\\", "\\\\")
-                    .replace("\"", "\\22")
-                    .replace("\n", "\\0A")
-                    .replace("\r", "\\0D")
-                    .replace("\t", "\\09")
-                    .replace("\0", "\\00");
-                // 字符串长度 = LLVM IR 字节数（\XX 转义序列是 1 字节）
-                let str_len = Self::calculate_llvm_string_byte_len(&escaped);
+                // 将所有字符转换为 UTF-8 字节的十六进制转义序列
+                // 这样可以正确处理中文字符和其他非 ASCII 字符
+                let escaped = Self::escape_string_to_llvm_ir(s);
+                // 字符串长度 = 原始 UTF-8 字节数
+                let str_len = s.as_bytes().len();
                 // 生成唯一的字符串常量标签
                 let str_label = format!("str_{}", self.label_counter);
                 self.label_counter += 1;
@@ -2892,6 +2907,8 @@ impl CodeGenerator {
      */
     fn infer_member_type(&self, field_name: &str) -> &'static str {
         match field_name {
+            // Codegen 结构体字段 - 文本类型
+            "moduleName" | "currentFunc" | "currentReturnType" => "i8*",
             // 文本类型字段
             "源码" | "source" | "值" | "value" | "字面量" | "literal" |
             "名称" | "name" | "错误信息" => "i8*",
@@ -2902,9 +2919,10 @@ impl CodeGenerator {
             "起始位置" | "当前位置" | "是否错误" | "id" | "kind" |
             "intValue" | "nodeCount" | "tokenCount" | "源码长度" |
             "parserPos" | "当前行号" | "当前列号" | "错误计数" | "警告计数" |
-            "开始位置" | "结束位置" => "i64",
+            "开始位置" | "结束位置" | "tempCount" | "labelCount" | "funcCount" |
+            "indent" | "stringConstCount" => "i64",
             // 列表类型字段
-            "token列表" | "tokens" | "errors" | "children" => "i8*",
+            "token列表" | "tokens" | "errors" | "children" | "output" | "funcDefs" => "i8*",
             // 默认为整数类型
             _ => "i64"
         }
@@ -2995,35 +3013,30 @@ impl CodeGenerator {
             // 控制台输入函数（映射到 C 运行时函数）
             "输入整数" => "rt_input_int".to_string(),
             "输入文本" => "rt_input_text".to_string(),
+            "读取行" => "rt_readline".to_string(),
             // 文本函数
             "文本长度" => "rt_string_len".to_string(),
             "文本拼接" => "str_concat".to_string(),
             "文本切片" => "str_slice".to_string(),
             "文本包含" => "str_contains".to_string(),
             "文本获取字符" => "rt_string_char_at".to_string(),
+            "字符编码" => "rt_char_to_code".to_string(),
             // 命令行参数函数
             "参数个数" => "argc".to_string(),
             "获取参数" => "argv".to_string(),
             // 系统命令函数
             "执行命令" => "exec_cmd".to_string(),
             "命令输出" => "cmd_output".to_string(),
-            // 词法分析器用户函数
-            "是空格" => "is_space".to_string(),
-            "检查空格" => "check_space".to_string(),
-            "是数字" => "is_digit".to_string(),
-            "检查数字" => "check_digit".to_string(),
-            "是字母" => "is_alpha".to_string(),
-            "检查字母" => "check_alpha".to_string(),
-            "是关键字" => "is_keyword".to_string(),
-            "扫描数字" => "scan_digit".to_string(),
-            "是字母数字" => "is_alnum".to_string(),
-            "扫描标识符" => "scan_identifier".to_string(),
-            "词法分析" => "lex".to_string(),
+            // 注意：词法分析器辅助函数不进行特殊映射，保持原始中文名称
+            // 因为它们是在同一个模块中定义和调用的
             "主" => "主".to_string(),
             "文件存在" => "file_exists".to_string(),
             "文件读取" => "file_read".to_string(),
             "文件写入" => "file_write".to_string(),
             "文件删除" => "file_delete".to_string(),
+            "报错" => "rt_error".to_string(),
+            "详细输出" => "print".to_string(),
+            "append" => "rt_list_append".to_string(),
             _ => func_name.clone(),
         };
         
@@ -3033,13 +3046,12 @@ impl CodeGenerator {
             "打印" | "打印换行" | "打印文本" | "打印整数" | "打印浮点" | "打印布尔" |
             "文本转整数" | "整数转文本" | "创建列表" | "列表" | "列表添加" | "列表获取" | "列表长度" |
             "追加" | "获取" | "长度" |
-            "输入整数" | "输入文本" |
-            "文本长度" | "文本拼接" | "文本切片" | "文本包含" | "提取子串" | "文本获取字符" |
+            "输入整数" | "输入文本" | "读取行" |
+            "文本长度" | "文本拼接" | "文本切片" | "文本包含" | "提取子串" | "文本获取字符" | "字符编码" |
             "参数个数" | "获取参数" |
             "文件读取" | "文件写入" | "文件存在" | "文件删除" |
             "执行命令" | "命令输出" |
-            "是空格" | "检查空格" | "是数字" | "检查数字" | "是字母" | "检查字母" |
-            "是关键字" | "扫描数字" | "是字母数字" | "扫描标识符" | "词法分析"
+            "报错" | "详细输出" | "append"
         );
         
         // 检查是否是文件 I/O 函数

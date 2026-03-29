@@ -44,12 +44,7 @@ $L2_DIR = Join-Path $OUTPUT_DIR "l2"
 $L3_IR_DIR = Join-Path $OUTPUT_DIR "l3_ir"
 
 $XY_MODULES = @(
-    "runtime.xy",
-    "lexer.xy",
-    "parser.xy",
-    "sema.xy",
-    "codegen.xy",
-    "main.xy"
+    "compiler.xy"
 )
 
 # Create output directories
@@ -89,7 +84,13 @@ function Compile-Single-Module {
         return $false
     }
 
-    $output = & $CompilerPath $ModulePath --ir 2>&1
+    # 从项目根目录运行编译器
+    Push-Location $PROJECT_ROOT
+    try {
+        $output = & $CompilerPath $ModulePath --ir 2>&1
+    } finally {
+        Pop-Location
+    }
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -eq 0) {

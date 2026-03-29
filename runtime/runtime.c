@@ -113,6 +113,30 @@ int is_alnum(void* ch_ptr) {
     return (is_alpha(ch_ptr) || is_digit(ch_ptr)) ? 1 : 0;
 }
 
+/* Character to code conversion */
+int64_t rt_char_to_code(void* ch_ptr) {
+    if (!ch_ptr) return 0;
+    char ch = *((char*)ch_ptr);
+    return (int64_t)(unsigned char)ch;
+}
+
+/* Error function */
+void rt_error(void* msg) {
+    if (msg) {
+        fprintf(stderr, "Error: %s\n", (char*)msg);
+    }
+    exit(1);
+}
+
+/* List functions (without rt_ prefix for compatibility) */
+int64_t list_len(void* list_ptr) {
+    return rt_list_len(list_ptr);
+}
+
+void* list_get(void* list_ptr, int64_t index) {
+    return rt_list_get(list_ptr, index);
+}
+
 /* String functions */
 int64_t rt_string_len(void* str) {
     if (!str) return 0;

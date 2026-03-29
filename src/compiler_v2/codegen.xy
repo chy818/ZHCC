@@ -103,20 +103,22 @@
     result = codegenNewTemp(cg)
 
     若 type == 1 则 {
-        // 整数
-        定义 可变 line: 文本
-        line = "%" + result + " = add i64 0, " + value
-        codegenEmit(cg, line)
+        // 整数 - 但由于返回类型是文本，我们需要返回指针类型
+        // 我们将 i64 转换为 i8* (inttoptr)
+        定义 可变 intTmp: 文本
+        intTmp = codegenNewTemp(cg)
+        codegenEmit(cg, "%" + intTmp + " = add i64 0, " + value)
+        codegenEmit(cg, "%" + result + " = inttoptr i64 %" + intTmp + " to i8*")
     } 否则 {
         若 type == 2 则 {
-            // 字符串
+            // 字符串 - 直接返回指针
             定义 可变 tmpPtr: 文本
             tmpPtr = codegenNewTemp(cg)
             codegenEmit(cg, "%" + tmpPtr + " = getelementptr [0 x i8], [0 x i8]* null, i64 0, i64 0")
-            result = ptr
+            result = tmpPtr
         } 否则 {
-            // 默认作为整数
-            codegenEmit(cg, "%" + result + " = add i64 0, " + value)
+            // 默认 - 返回空指针
+            codegenEmit(cg, "%" + result + " = inttoptr i64 0 to i8*")
         }
     }
 
@@ -323,7 +325,7 @@
 
     定义 可变 value: 文本
     value = codegenNewTemp(cg)
-    line = "%" + value + " = load " + elementType + ", " + elementType + "* %" + ptr
+    line = "%" + value + " = load " + elementType + ", " + elementType + "* %" + tmpPtr
     codegenEmit(cg, line)
 
     返回 value
@@ -340,7 +342,7 @@
     line = "%" + tmpPtr + " = getelementptr " + elementType + ", " + elementType + "* %" + arrayPtr + ", i64 %" + index
     codegenEmit(cg, line)
 
-    line = "store " + elementType + " %" + value + ", " + elementType + "* %" + ptr
+    line = "store " + elementType + " %" + value + ", " + elementType + "* %" + tmpPtr
     codegenEmit(cg, line)
 }
 
@@ -371,7 +373,7 @@
 
     定义 可变 value: 文本
     value = codegenNewTemp(cg)
-    line = "%" + value + " = load " + fieldType + ", " + fieldType + "* %" + ptr
+    line = "%" + value + " = load " + fieldType + ", " + fieldType + "* %" + tmpPtr
     codegenEmit(cg, line)
 
     返回 value
@@ -388,7 +390,7 @@
     line = "%" + tmpPtr + " = getelementptr " + fieldType + ", " + fieldType + "* %" + structPtr + ", i32 0, i32 " + 整数转文本(fieldIndex)
     codegenEmit(cg, line)
 
-    line = "store " + fieldType + " %" + value + ", " + fieldType + "* %" + ptr
+    line = "store " + fieldType + " %" + value + ", " + fieldType + "* %" + tmpPtr
     codegenEmit(cg, line)
 }
 
@@ -1440,7 +1442,7 @@
     result = codegenNewTemp(cg)
 
     定义 可变 line: 文本
-    line = "%" + result + " = load volatile i64, i64* %" + ptr
+    line = "%" + result + " = load volatile i64, i64* %" + tmpPtr
     codegenEmit(cg, line)
 
     返回 result
@@ -1451,7 +1453,7 @@
  */
 函数 codegenVolatileStore(cg: Codegen, value: 文本, tmpPtr: 文本): 无返回 {
     定义 可变 line: 文本
-    line = "store volatile i64 %" + value + ", i64* %" + ptr
+    line = "store volatile i64 %" + value + ", i64* %" + tmpPtr
     codegenEmit(cg, line)
 }
 
@@ -1557,9 +1559,9 @@
  * 生成调试位置
  */
 函数 emitDebugLocation(cg: Codegen, line: 整数, col: 整数): 无返回 {
-    定义 可变 line: 文本
-    line = "!DILocation(line: " + 整数转文本(line) + ", column: " + 整数转文本(col) + ")"
-    codegenEmit(cg, line)
+    定义 可变 debugStr: 文本
+    debugStr = "!DILocation(line: " + 整数转文本(line) + ", column: " + 整数转文本(col) + ")"
+    codegenEmit(cg, debugStr)
 }
 
 /**
@@ -1575,9 +1577,9 @@
  * 生成行号标注
  */
 函数 emitLineNumber(cg: Codegen, line: 整数): 无返回 {
-    定义 可变 line: 文本
-    line = "; 行号: " + 整数转文本(line)
-    codegenEmit(cg, line)
+    定义 可变 lineStr: 文本
+    lineStr = "; 行号: " + 整数转文本(line)
+    codegenEmit(cg, lineStr)
 }
 
 /* ============ 主函数 ============ */
@@ -1685,7 +1687,7 @@
     line = "%" + tmpPtr + " = alloca " + getLLVMType(typeName)
     codegenEmit(cg, line)
 
-    返回 ptr
+    返回 tmpPtr
 }
 
 /**
@@ -1696,7 +1698,7 @@
     tmpPtr = varName + "_slot"
 
     定义 可变 line: 文本
-    line = "store " + getLLVMType(varType) + " %" + value + ", " + getLLVMType(varType) + "* %" + ptr
+    line = "store " + getLLVMType(varType) + " %" + value + ", " + getLLVMType(varType) + "* %" + tmpPtr
     codegenEmit(cg, line)
 }
 
@@ -3116,7 +3118,7 @@
     line = "%" + tmpPtr + " = alloca i64"
     codegenEmit(cg, line)
 
-    返回 ptr
+    返回 tmpPtr
 }
 
 /**
@@ -3178,7 +3180,7 @@
     tmpPtr = varName + "_slot"
 
     定义 可变 line: 文本
-    line = "store i64 %" + value + ", i64* %" + ptr
+    line = "store i64 %" + value + ", i64* %" + tmpPtr
     codegenEmit(cg, line)
 }
 
@@ -3214,7 +3216,7 @@
     line = "%" + startTmp + " = add i64 0, " + 整数转文本(startVal)
     codegenEmit(cg, line)
 
-    line = "store i64 %" + startTmp + ", i64* %" + ptr
+    line = "store i64 %" + startTmp + ", i64* %" + tmpPtr
     codegenEmit(cg, line)
 
     line = "br label %" + incLabel
