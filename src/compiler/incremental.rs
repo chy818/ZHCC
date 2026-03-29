@@ -169,7 +169,7 @@ impl IncrementalCompiler {
             dependency_graph: HashMap::new(),
             cache_dir,
             last_build_time: 0,
-            enabled: true,
+            enabled: false,
         }
     }
 

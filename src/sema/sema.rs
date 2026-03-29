@@ -103,6 +103,8 @@ pub struct SemanticAnalyzer {
     scopes: Vec<Scope>,
     errors: Vec<TypeError>,
     import_stack: Vec<String>,
+    /// 当前模块的目录（用于解析相对导入路径）
+    current_module_dir: Option<String>,
     /// 当前泛型函数的类型变量映射
     /// 例如: T -> 整数, U -> 文本
     type_var_bindings: std::collections::HashMap<String, Type>,
@@ -122,6 +124,7 @@ impl SemanticAnalyzer {
             scopes,
             errors: Vec::new(),
             import_stack: Vec::new(),
+            current_module_dir: None,
             type_var_bindings: std::collections::HashMap::new(),
             function_signatures: std::collections::HashMap::new(),
             struct_definitions: std::collections::HashMap::new(),
@@ -305,6 +308,11 @@ impl SemanticAnalyzer {
             self.analyze_constant_statement(const_stmt)?;
         }
 
+        // 处理顶级变量定义
+        for var_stmt in &module.variables {
+            self.analyze_let_statement(var_stmt)?;
+        }
+
         // 收集所有函数声明到全局作用域
         for func in &module.functions {
             self.define_symbol(
@@ -344,10 +352,10 @@ impl SemanticAnalyzer {
      */
     fn process_import(&mut self, import: &ImportStmt) -> Result<(), Vec<TypeError>> {
         let module_path = &import.module_path;
-        
+
         // 解析模块路径 (去除引号和.xy后缀)
         let module_name = module_path.trim_matches('"').trim_end_matches(".xy");
-        
+
         // 检查循环导入
         if self.import_stack.contains(&module_name.to_string()) {
             self.errors.push(TypeError {
@@ -361,14 +369,27 @@ impl SemanticAnalyzer {
         // 将当前模块添加到导入栈
         self.import_stack.push(module_name.to_string());
 
-        // 尝试加载模块文件
-        let imported_module = self.load_module(module_path)?;
-        
+        // 保存当前的模块目录
+        let previous_dir = self.current_module_dir.take();
+
+        // 尝试加载模块文件（传递当前模块目录用于相对路径解析）
+        let resolved_path = self.resolve_module_path(module_path, previous_dir.as_deref())?;
+        let imported_module = self.load_module(module_path, previous_dir.as_deref())?;
+
+        // 更新当前模块目录为被导入模块的目录
+        let imported_dir = std::path::Path::new(&resolved_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string());
+        self.current_module_dir = imported_dir;
+
         // 递归分析导入的模块
         self.analyze_module(&imported_module)?;
 
         // 从导入栈中移除
         self.import_stack.pop();
+
+        // 恢复之前的模块目录
+        self.current_module_dir = previous_dir;
 
         // 将导入的符号添加到当前作用域
         for func in &imported_module.functions {
@@ -410,17 +431,71 @@ impl SemanticAnalyzer {
     }
 
     /**
+     * 解析模块文件路径
+     * 尝试多个可能的位置
+     */
+    fn resolve_module_path(&self, module_path: &str, current_file: Option<&str>) -> Result<String, Vec<TypeError>> {
+        let path = module_path.trim_matches('"');
+
+        // 尝试1: 直接作为绝对/相对路径
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
+        }
+
+        // 尝试2: 相对于当前模块目录
+        if let Some(current) = current_file {
+            let current_dir = std::path::Path::new(current)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string());
+
+            if let Some(dir) = current_dir {
+                let relative_path = format!("{}/{}", dir, path);
+                if std::path::Path::new(&relative_path).exists() {
+                    return Ok(relative_path);
+                }
+            }
+        }
+
+        // 尝试3: 相对于项目根目录 (当前工作目录)
+        // 检查是否是 stdlib 模块
+        if !path.starts_with("stdlib/") && !path.starts_with("./") && !path.starts_with("../") {
+            let stdlib_path = format!("stdlib/{}", path);
+            if std::path::Path::new(&stdlib_path).exists() {
+                return Ok(stdlib_path);
+            }
+        }
+
+        // 尝试4: 直接使用提供的路径
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
+        }
+
+        // 所有尝试都失败
+        Err(vec![TypeError {
+            code: "E0428".to_string(),
+            message: format!("无法找到模块 '{}' (已尝试相对于当前模块目录和 stdlib 目录)", path),
+            span: Span::dummy(),
+        }])
+    }
+
+    /**
      * 加载模块文件
      */
-    fn load_module(&self, module_path: &str) -> Result<Module, Vec<TypeError>> {
-        // 去除引号
-        let path = module_path.trim_matches('"');
-        
-        // 读取模块文件
-        let source = std::fs::read_to_string(path)
+    fn load_module(&self, module_path: &str, current_file: Option<&str>) -> Result<Module, Vec<TypeError>> {
+        // 解析模块路径
+        let resolved_path = self.resolve_module_path(module_path, current_file)?;
+
+        // 读取模块文件（使用 UTF-8 编码）
+        let source = std::fs::read(&resolved_path)
             .map_err(|e| vec![TypeError {
                 code: "E0428".to_string(),
-                message: format!("无法加载模块 '{}': {}", path, e),
+                message: format!("无法加载模块 '{}': {}", resolved_path, e),
+                span: Span::dummy(),
+            }])?;
+        let source = String::from_utf8(source)
+            .map_err(|e| vec![TypeError {
+                code: "E0428".to_string(),
+                message: format!("模块不是有效的 UTF-8 编码: {}", resolved_path),
                 span: Span::dummy(),
             }])?;
 
@@ -1079,7 +1154,38 @@ impl SemanticAnalyzer {
                 self.analyze_call_expression(call)
             }
             Expr::MemberAccess(member) => {
-                self.analyze_member_expression(member)
+                // 分析对象表达式
+                let object_type = self.analyze_expression(&member.object)?;
+                let member_name = &member.member;
+
+                // 确定成员类型
+                let result = match &object_type {
+                    Type::Struct(struct_name) | Type::Custom(struct_name) => {
+                        if let Some(struct_def) = self.struct_definitions.get(struct_name) {
+                            let mut found = false;
+                            let mut field_type = Type::Any;
+                            for field in &struct_def.fields {
+                                if &field.name == member_name {
+                                    field_type = field.field_type.clone();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if found {
+                                field_type
+                            } else {
+                                Type::Any
+                            }
+                        } else {
+                            Type::Any
+                        }
+                    }
+                    _ => Type::Any,
+                };
+
+                // 设置成员类型（使用内部可变性）
+                member.set_member_type(result.clone());
+                Ok(result)
             }
             Expr::Grouped(expr) => {
                 self.analyze_expression(expr)
@@ -1435,23 +1541,18 @@ impl SemanticAnalyzer {
             // 检查是否为内置类型构造函数
             match ident.name.as_str() {
                 "列表" => {
-                    // 列表构造函数，返回空列表类型
                     return Ok(Type::List(Box::new(Type::Int)));
                 }
                 "整数" => {
-                    // 整数构造函数，返回整数类型
                     return Ok(Type::Int);
                 }
                 "文本" => {
-                    // 文本构造函数，返回文本类型
                     return Ok(Type::String);
                 }
                 "打印" | "print" => {
-                    // 打印函数，返回 Void
                     return Ok(Type::Void);
                 }
                 "列表获取" | "列表长度" | "列表添加" => {
-                    // 列表内置函数
                     return Ok(Type::Any);
                 }
                 _ => {}
@@ -1469,13 +1570,13 @@ impl SemanticAnalyzer {
                                 type_subst.insert(type_param.clone(), call.type_args[i].clone());
                             }
                         }
-                        
+
                         // 替换返回类型中的类型变量
                         let return_type = self.substitute_type_with_map(&signature.return_type, &type_subst);
                         return Ok(return_type);
                     }
                 }
-                
+
                 // 没有找到函数签名，使用第一个类型参数作为返回类型
                 let return_type = call.type_args[0].clone();
                 return Ok(return_type);
@@ -1517,7 +1618,7 @@ impl SemanticAnalyzer {
         }
 
         // TODO: 检查参数类型匹配
-        
+
         Ok(Type::Int) // 简化返回 int
     }
     

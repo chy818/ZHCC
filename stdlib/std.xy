@@ -2,22 +2,22 @@
  * @file stdlib/std.xy
  * @brief 玄语标准库入口
  * @description 导入所有标准库模块
- * 
+ *
  * 使用方法:
- * 导入 "stdlib/std.xy"
+ * 引入 "stdlib/std.xy"
  */
 
 // 导入字符串处理模块
-导入 "string.xy"
+引入 "string.xy"
 
 // 导入数组操作模块
-导入 "array.xy"
+引入 "array.xy"
 
 // 导入数学工具模块
-导入 "math.xy"
+引入 "math.xy"
 
 // 导入输入输出模块
-导入 "io.xy"
+引入 "io.xy"
 
 /**
  * 标准库版本信息

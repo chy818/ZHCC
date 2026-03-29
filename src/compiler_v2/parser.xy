@@ -987,9 +987,10 @@
         parserConsume(p)
     }
 
-    /* 解析被匹配的值 */
+    /* 解析被匹配的值并添加到 children */
     定义 可变 subjectNode: AST节点
     subjectNode = parseExpression(p)
+    node.children.追加(subjectNode)
 
     /* 消费 '{' */
     tok = parserPeekToken(p)
@@ -1001,6 +1002,8 @@
     tok = parserPeekToken(p)
     当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         定义 可变 branchNode: AST节点
+        branchNode = parserCreateNode(26, "", "", line)
+        branchNode.children = 列表()
 
         /* 检查是否是 default 分支 */
         若 tok.值 == "默认" 则 {
@@ -1013,6 +1016,9 @@
             定义 可变 defaultBody: AST节点
             defaultBody = parseExpression(p)
             branchNode = parserCreateNode(27, "", "", line)  // match默认分支
+            branchNode.children = 列表()
+            branchNode.children.追加(defaultBody)
+            node.children.追加(branchNode)
         } 否则 {
             /* case 分支 */
             若 tok.值 == "情况" 则 {
@@ -1021,6 +1027,7 @@
 
             /* 解析 case 值 */
             定义 可变 caseValue: 文本
+            caseValue = ""
             tok = parserPeekToken(p)
             若 tok.类型 == 1 则 {
                 caseValue = tok.值
@@ -1041,9 +1048,11 @@
                 parserConsume(p)
             }
 
-            /* 解析分支体 */
+            /* 解析分支体并添加到 children */
             定义 可变 branchBody: AST节点
             branchBody = parseExpression(p)
+            branchNode.children.追加(branchBody)
+            node.children.追加(branchNode)
         }
 
         /* 消费 ',' || ';' */
@@ -1115,11 +1124,11 @@
             /* 获取字段类型 */
             tok = parserPeekToken(p)
             若 tok.类型 == 3 则 {
-                fieldNode.value = tok.值  // 类型名
+                fieldNode.value = tok.值
                 parserConsume(p)
             }
 
-            node.children = fieldNode  // 添加字段到结构体
+            node.children.追加(fieldNode)
 
             /* 消费 ',' || '}' */
             tok = parserPeekToken(p)
@@ -1132,6 +1141,7 @@
     }
 
     /* 消费 '}' */
+    tok = parserPeekToken(p)
     若 tok.值 == "}" 则 {
         parserConsume(p)
     }
@@ -1267,8 +1277,8 @@
     当 tok.值 != "}" && tok.值 != "" && tok.类型 != 6 则 {
         若 tok.类型 == 0 则 {
             定义 可变 memberNode: AST节点
-            memberNode = parserCreateNode(24, tok.值, "", tok.行号)  // 枚举成员
-            node.children = memberNode  // 添加成员到children
+            memberNode = parserCreateNode(24, tok.值, "", tok.行号)
+            node.children.追加(memberNode)
             parserConsume(p)
 
             /* 消费 ',' || '}' */
@@ -1282,6 +1292,7 @@
     }
 
     /* 消费 '}' */
+    tok = parserPeekToken(p)
     若 tok.值 == "}" 则 {
         parserConsume(p)
     }

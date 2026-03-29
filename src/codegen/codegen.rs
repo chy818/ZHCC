@@ -65,6 +65,10 @@ pub struct CodeGenerator {
     label_counter: usize,
     /// Lambda 函数计数器
     lambda_counter: usize,
+    /// 函数索引计数器（用于生成唯一的标签前缀）
+    function_index_counter: usize,
+    /// 当前函数索引
+    current_function_index: usize,
     /// 变量名到 SSA 值的映射
     variables: std::collections::HashMap<String, String>,
     /// 变量名到类型的映射
@@ -73,10 +77,12 @@ pub struct CodeGenerator {
     string_constants: std::collections::HashMap<String, (String, usize)>,
     /// 闭包变量映射：变量名 -> Lambda 函数名
     closures: std::collections::HashMap<String, String>,
-    /// 当前函数名（用于尾调用优化）
+    /// 当前函数名（用于尾调用优化和标签前缀）
     current_function_name: Option<String>,
     /// 当前函数参数列表
     current_function_params: Vec<String>,
+    /// 当前函数返回类型
+    current_function_return_type: Type,
     /// 函数入口标签
     entry_label: Option<String>,
     /// 是否处于尾调用位置
@@ -91,6 +97,8 @@ pub struct CodeGenerator {
     closure_vars: Vec<String>,
     /// 循环上下文栈（用于 break/continue）
     loop_context_stack: Vec<LoopContext>,
+    /// 函数签名表：函数名 -> 函数定义（用于推断返回类型）
+    function_signatures: std::collections::HashMap<String, Function>,
 }
 
 /**
@@ -117,12 +125,15 @@ impl CodeGenerator {
             indent: 0,
             label_counter: 0,
             lambda_counter: 0,
+            function_index_counter: 0,
+            current_function_index: 0,
             variables: std::collections::HashMap::new(),
             variable_types: std::collections::HashMap::new(),
             string_constants: std::collections::HashMap::new(),
             closures: std::collections::HashMap::new(),
             current_function_name: None,
             current_function_params: Vec::new(),
+            current_function_return_type: Type::Void,
             entry_label: None,
             in_tail_position: false,
             specialization_cache: std::collections::HashMap::new(),
@@ -130,6 +141,7 @@ impl CodeGenerator {
             global_functions: Vec::new(),
             closure_vars: Vec::new(),
             loop_context_stack: Vec::new(),
+            function_signatures: std::collections::HashMap::new(),
         }
     }
 
@@ -468,9 +480,9 @@ impl CodeGenerator {
             "文本包含" => Some("str_contains"),
             "参数个数" => Some("argc"),
             "获取参数" => Some("argv"),
-            // 控制台输入函数
-            "输入整数" => Some("输入整数"),
-            "输入文本" => Some("输入文本"),
+            // 控制台输入函数（映射到 C 运行时函数）
+            "输入整数" => Some("rt_input_int"),
+            "输入文本" => Some("rt_input_text"),
             // 文件 I/O 函数
             "文件读取" => Some("文件读取"),
             "文件写入" => Some("文件写入"),
@@ -511,17 +523,26 @@ impl CodeGenerator {
     }
 
     fn emit_label(&mut self, label_name: &str) {
-        // 移除前面的空行（只移除连续的空行，保留一个换行）
+        // 确保从新行开始
         while self.ir_output.ends_with("\n\n") {
             self.ir_output.pop();
+        }
+        // 如果最后一个字符不是换行符，先添加换行
+        if !self.ir_output.is_empty() && !self.ir_output.ends_with("\n") {
+            self.ir_output.push_str("\n");
+        }
+        // 添加缩进
+        for _ in 0..self.indent {
+            self.ir_output.push_str("  ");
         }
         self.ir_output.push_str(label_name);
         self.ir_output.push_str(":\n");
     }
 
     fn new_label(&mut self, prefix: &str) -> String {
-        let label = format!("{}.{}", prefix, self.label_counter);
+        let id = self.label_counter;
         self.label_counter += 1;
+        let label = format!("{}_{}", prefix, id);
         label
     }
 
@@ -663,12 +684,31 @@ impl CodeGenerator {
                     crate::ast::BinaryOp::Mul => lambda_ir.push_str(&format!("%{} = mul i64 %{}, %{}\n", result, left, right)),
                     crate::ast::BinaryOp::Div => lambda_ir.push_str(&format!("%{} = sdiv i64 %{}, %{}\n", result, left, right)),
                     crate::ast::BinaryOp::Rem => lambda_ir.push_str(&format!("%{} = srem i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Eq => lambda_ir.push_str(&format!("%{} = icmp eq i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Ne => lambda_ir.push_str(&format!("%{} = icmp ne i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Gt => lambda_ir.push_str(&format!("%{} = icmp sgt i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Lt => lambda_ir.push_str(&format!("%{} = icmp slt i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Ge => lambda_ir.push_str(&format!("%{} = icmp sge i64 %{}, %{}\n", result, left, right)),
-                    crate::ast::BinaryOp::Le => lambda_ir.push_str(&format!("%{} = icmp sle i64 %{}, %{}\n", result, left, right)),
+                    crate::ast::BinaryOp::Eq => {
+                        // 使用实际类型而不是硬编码 i64
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp eq {} %{}, %{}\n", result, left_type, left, right))
+                    }
+                    crate::ast::BinaryOp::Ne => {
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp ne {} %{}, %{}\n", result, left_type, left, right))
+                    }
+                    crate::ast::BinaryOp::Gt => {
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp sgt {} %{}, %{}\n", result, left_type, left, right))
+                    }
+                    crate::ast::BinaryOp::Lt => {
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp slt {} %{}, %{}\n", result, left_type, left, right))
+                    }
+                    crate::ast::BinaryOp::Ge => {
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp sge {} %{}, %{}\n", result, left_type, left, right))
+                    }
+                    crate::ast::BinaryOp::Le => {
+                        let left_type = self.infer_expression_type(&binary.left);
+                        lambda_ir.push_str(&format!("%{} = icmp sle {} %{}, %{}\n", result, left_type, left, right))
+                    }
                     crate::ast::BinaryOp::And => lambda_ir.push_str(&format!("%{} = and i64 %{}, %{}\n", result, left, right)),
                     crate::ast::BinaryOp::Or => lambda_ir.push_str(&format!("%{} = or i64 %{}, %{}\n", result, left, right)),
                     _ => return Err("unsupported binary operator"),
@@ -702,7 +742,7 @@ impl CodeGenerator {
                     LiteralKind::Float(_) => "double".to_string(),
                     LiteralKind::Boolean(_) => "i64".to_string(),
                     LiteralKind::String(_) => "i8*".to_string(),
-                    LiteralKind::Char(_) => "i32".to_string(),
+                    LiteralKind::Char(_) => "i8".to_string(),
                 }
             }
             Expr::Identifier(ident) => {
@@ -721,10 +761,20 @@ impl CodeGenerator {
                 // 二元运算结果类型
                 let left_type = self.infer_expression_type(&binary.left);
                 let right_type = self.infer_expression_type(&binary.right);
-                
+
                 // 比较运算返回布尔类型
                 match binary.op {
                     BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Ge | BinaryOp::Le => "i1".to_string(),
+                    BinaryOp::Add => {
+                        // 如果操作数是字符串类型，结果也是字符串
+                        if left_type == "i8*" || right_type == "i8*" {
+                            "i8*".to_string()
+                        } else if left_type == "double" || right_type == "double" {
+                            "double".to_string()
+                        } else {
+                            "i64".to_string()
+                        }
+                    }
                     _ => {
                         // 其他运算：如果任一操作数是浮点，结果为浮点
                         if left_type == "double" || right_type == "double" {
@@ -736,25 +786,50 @@ impl CodeGenerator {
                 }
             }
             Expr::Call(call) => {
-                // 函数调用返回类型
-                let func_name = match &*call.function {
-                    Expr::Identifier(ident) => ident.name.clone(),
-                    _ => "unknown".to_string(),
-                };
-                
-                // 内置函数返回类型
-                match func_name.as_str() {
-                    "打印" | "print" => "void".to_string(),
-                    "整数转文本" | "int_to_str" => "i8*".to_string(),
-                    "文本转整数" | "str_to_int" => "i64".to_string(),
-                    "文本长度" | "str_len" => "i64".to_string(),
-                    "文本切片" | "str_slice" => "i8*".to_string(),
-                    _ => "i64".to_string(), // 默认用户函数返回 i64
+                // 如果语义分析已经确定了返回类型，直接使用
+                if let Some(return_type) = &call.return_type {
+                    type_to_llvm(return_type).to_string()
+                } else {
+                    // 否则查找函数签名表获取返回类型
+                    let func_name = match &*call.function {
+                        Expr::Identifier(ident) => ident.name.clone(),
+                        _ => "unknown".to_string(),
+                    };
+
+                    // 先检查函数签名表
+                    if let Some(func) = self.function_signatures.get(&func_name) {
+                        type_to_llvm(&func.return_type).to_string()
+                    } else {
+                        // 使用内置函数返回类型
+                        match func_name.as_str() {
+                            "打印" | "print" => "void".to_string(),
+                            "整数转文本" | "int_to_str" => "i8*".to_string(),
+                            "文本转整数" | "str_to_int" => "i64".to_string(),
+                            "文本长度" | "str_len" | "文本拼接" | "str_concat" => "i8*".to_string(),
+                            "文本获取字符" | "str_char_at" => "i64".to_string(),
+                            "文本切片" | "str_slice" => "i8*".to_string(),
+                            "提取子串" | "substring" => "i8*".to_string(),
+                            "是关键字" | "is_keyword" => "i64".to_string(),
+                            _ => "i64".to_string(), // 默认用户函数返回 i64
+                        }
+                    }
                 }
             }
-            Expr::MemberAccess(_) => {
-                // 成员访问：所有字段都存储为 i64
-                "i64".to_string()
+            Expr::MemberAccess(member) => {
+                // 成员访问：优先使用语义分析确定的类型
+                if let Some(ref member_ty) = member.get_member_type() {
+                    type_to_llvm(member_ty).to_string()
+                } else {
+                    // 如果没有语义分析类型，使用字段名推断
+                    if member.member == "值" || member.member == "value" ||
+                       member.member == "源码" || member.member == "source" ||
+                       member.member == "字面量" || member.member == "literal" ||
+                       member.member == "名称" || member.member == "name" {
+                        "i8*".to_string()
+                    } else {
+                        "i64".to_string()
+                    }
+                }
             }
             Expr::Unary(unary) => {
                 // 一元运算：继承操作数类型
@@ -795,13 +870,59 @@ impl CodeGenerator {
     }
 
     /**
+     * 解析模块文件路径（尝试多个可能的位置）
+     */
+    fn resolve_module_path(&self, module_path: &str, current_file: Option<&str>) -> Result<String, CodegenError> {
+        let path = module_path.trim_matches('"');
+
+        // 尝试1: 直接作为绝对/相对路径
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
+        }
+
+        // 尝试2: 相对于当前模块目录
+        if let Some(current) = current_file {
+            let current_dir = std::path::Path::new(current)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string());
+
+            if let Some(dir) = current_dir {
+                let relative_path = format!("{}/{}", dir, path);
+                if std::path::Path::new(&relative_path).exists() {
+                    return Ok(relative_path);
+                }
+            }
+        }
+
+        // 尝试3: 相对于项目根目录 (当前工作目录)
+        if !path.starts_with("stdlib/") && !path.starts_with("./") && !path.starts_with("../") {
+            let stdlib_path = format!("stdlib/{}", path);
+            if std::path::Path::new(&stdlib_path).exists() {
+                return Ok(stdlib_path);
+            }
+        }
+
+        // 尝试4: 直接使用提供的路径
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
+        }
+
+        // 所有尝试都失败
+        Err(CodegenError {
+            code: "C001".to_string(),
+            message: format!("无法找到模块 '{}' (已尝试相对于当前模块目录和 stdlib 目录)", path),
+        })
+    }
+
+    /**
      * 加载并解析导入模块
      * 递归处理模块导入，收集所有函数定义
      */
-    fn load_imported_module(&mut self, module_path: &str, processed_modules: &mut std::collections::HashSet<String>) -> Result<Module, CodegenError> {
-        // 去除引号
-        let path = module_path.trim_matches('"');
-        
+    fn load_imported_module(&mut self, module_path: &str, processed_modules: &mut std::collections::HashSet<String>, current_file: Option<&str>) -> Result<Module, CodegenError> {
+        // 解析模块路径
+        let resolved_path = self.resolve_module_path(module_path, current_file)?;
+        let path = resolved_path.trim_matches('"');
+
         // 检查是否已处理过该模块
         if processed_modules.contains(path) {
             return Ok(Module {
@@ -811,6 +932,7 @@ impl CodeGenerator {
                 enums: vec![],
                 type_aliases: vec![],
                 constants: vec![],
+                variables: vec![],
                 extern_functions: vec![],
                 macros: vec![],
                 span: crate::lexer::token::Span::dummy(),
@@ -819,12 +941,17 @@ impl CodeGenerator {
         
         // 标记为已处理
         processed_modules.insert(path.to_string());
-        
-        // 读取模块文件
-        let source = std::fs::read_to_string(path)
+
+        // 读取模块文件（使用 UTF-8 编码）
+        let source = std::fs::read(path)
             .map_err(|e| CodegenError {
                 code: "C001".to_string(),
                 message: format!("无法加载模块 '{}': {}", path, e),
+            })?;
+        let source = String::from_utf8(source)
+            .map_err(|e| CodegenError {
+                code: "C001".to_string(),
+                message: format!("模块不是有效的 UTF-8 编码: {}", path),
             })?;
         
         // 词法分析
@@ -849,17 +976,24 @@ impl CodeGenerator {
      * 递归收集模块及其导入的所有函数
      * 注意：使用 collected_names 在整个递归过程中去重
      */
-    fn collect_all_functions(&mut self, module: &Module, collected_names: &mut std::collections::HashSet<String>, processed_modules: &mut std::collections::HashSet<String>) -> Result<Vec<Function>, CodegenError> {
+    fn collect_all_functions(&mut self, module: &Module, collected_names: &mut std::collections::HashSet<String>, processed_modules: &mut std::collections::HashSet<String>, current_file: Option<&str>) -> Result<Vec<Function>, CodegenError> {
         let mut all_functions = Vec::new();
-        
+
         // 先处理导入模块
         for import in &module.imports {
-            let imported_module = self.load_imported_module(&import.module_path, processed_modules)?;
+            // 解析导入模块的路径（相对于当前文件）
+            let resolved_path = self.resolve_module_path(&import.module_path, current_file)?;
 
-            // 递归收集导入模块的函数
-            let imported_functions = self.collect_all_functions(&imported_module, collected_names, processed_modules)?;
+            // 收集所有子模块的函数
+            let imported_module = self.load_imported_module(&import.module_path, processed_modules, current_file)?;
 
-            // 直接添加递归返回的函数（递归调用已经去重并添加到 collected_names 了）
+            // 递归收集导入模块的函数（传递被解析后的模块路径）
+            let imported_dir = std::path::Path::new(&resolved_path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string());
+            let imported_functions = self.collect_all_functions(&imported_module, collected_names, processed_modules, imported_dir.as_deref())?;
+
+            // 直接添加递归返回的函数
             all_functions.extend(imported_functions);
         }
 
@@ -884,8 +1018,14 @@ impl CodeGenerator {
         // 收集所有函数（包括导入模块的函数）
         let mut collected_names = std::collections::HashSet::new();
         let mut processed_modules = std::collections::HashSet::new();
-        let all_functions = self.collect_all_functions(module, &mut collected_names, &mut processed_modules)?;
-        
+        let all_functions = self.collect_all_functions(module, &mut collected_names, &mut processed_modules, None)?;
+
+        // 填充函数签名表（用于推断函数调用返回类型）
+        self.function_signatures.clear();
+        for func in &all_functions {
+            self.function_signatures.insert(func.name.clone(), func.clone());
+        }
+
         // 查找主函数并记录其返回类型
         // 优先查找 "主" 函数，如果没有则查找 "main" 函数
         let mut main_func_return_type: Option<Type> = None;
@@ -929,10 +1069,11 @@ impl CodeGenerator {
         
         // 文本操作
         self.emit("declare i64 @rt_string_len(i8*)");
+        self.emit("declare i8* @rt_string_char_at(i8*, i64)");
         
-        // 控制台输入函数
-        self.emit("declare i64 @\"输入整数\"()");
-        self.emit("declare i8* @\"输入文本\"()");
+        // 控制台输入函数（使用 rt_ 前缀避免与 XY 函数冲突）
+        self.emit("declare i64 @rt_input_int()");
+        self.emit("declare i8* @rt_input_text()");
         
         // 打印整数/浮点/布尔函数 (ASCII 函数名)
         self.emit("declare void @print_int(i64)");
@@ -987,6 +1128,8 @@ impl CodeGenerator {
 
         // 生成每个函数的 IR（包括导入模块的函数）
         for func in all_functions.iter() {
+            self.current_function_index = self.function_index_counter;
+            self.function_index_counter += 1;
             self.generate_function(func)?;
         }
 
@@ -1111,14 +1254,46 @@ impl CodeGenerator {
      */
     fn generate_global_constant(&mut self, constant: &ConstantDef) -> Result<(), CodegenError> {
         let llvm_type = type_to_llvm(&constant.const_type);
-        let const_name = self.escape_llvm_ident(&constant.name);
-        
-        // 生成常量值
+
+        // 对于字符串常量，直接引用字符串常量
+        if let Expr::Literal(lit_expr) = &constant.value {
+            if let LiteralKind::String(s) = &lit_expr.kind {
+                // 直接使用字符串内容作为常量值
+                // LLVM IR 字符串需要转义: \, ", \n, \r, \t, \0
+                let escaped = s
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\22")
+                    .replace("\n", "\\0A")
+                    .replace("\r", "\\0D")
+                    .replace("\t", "\\09")
+                    .replace("\0", "\\00");
+                // 字符串长度 = 原始字符数 + 1 (null terminator)
+                // 转义序列在 LLVM IR 中仍然是单字节
+                let str_len = s.chars().count() + 1;
+
+                // 生成唯一的字符串常量标签
+                let str_label = format!("str_{}", self.label_counter);
+                self.label_counter += 1;
+
+                // 先存储字符串常量
+                self.string_constants.insert(str_label.clone(), (escaped.clone(), str_len));
+
+                // 直接引用字符串常量
+                let simple_name = format!("const_{}", self.label_counter);
+                self.label_counter += 1;
+                self.emit(&format!("@{} = constant {} @{}", simple_name, llvm_type, str_label));
+                return Ok(());
+            }
+        }
+
+        // 对于其他常量，生成表达式
         let const_value = self.generate_expression(&constant.value)?;
-        
-        // 生成全局常量声明
-        self.emit(&format!("@{} = constant {} {}", const_name, llvm_type, format!("%{}", const_value)));
-        
+
+        // 生成全局常量声明（使用简单标签避免中文字符问题）
+        let simple_name = format!("const_{}", self.label_counter);
+        self.label_counter += 1;
+        self.emit(&format!("@{} = constant {} @{}", simple_name, llvm_type, const_value.trim_start_matches('%')));
+
         Ok(())
     }
 
@@ -1131,32 +1306,77 @@ impl CodeGenerator {
             .iter()
             .map(|(k, &(ref v, len))| (k.clone(), v.clone(), len))
             .collect();
-        
-        for (label, content, array_size) in constants {
-            // 使用存储的长度（已经包含 null 终止符）
-            self.emit(&format!("@{} = private constant [{} x i8] c\"{}\"",
-                label, array_size, content));
+
+        for (label, content, _array_size) in constants {
+            // 计算 LLVM IR 中的实际字节数
+            // LLVM IR c"..." 中：
+            // - 普通字符是 1 字节
+            // - \XX 转义序列是 1 字节
+            let llvm_byte_len = Self::calculate_llvm_string_byte_len(&content);
+            // c"..." 格式会自动添加 null 终止符，所以数组大小是内容长度 + 1
+            self.emit(&format!("@{} = private constant [{} x i8] c\"{}\\00\"",
+                label, llvm_byte_len + 1, content));
         }
+    }
+
+    /**
+     * 计算 LLVM IR 字符串的字节长度
+     * LLVM IR 中 \XX 是单字节转义序列
+     */
+    fn calculate_llvm_string_byte_len(s: &str) -> usize {
+        let mut len = 0;
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                // LLVM IR 转义序列：\XX（十六进制）
+                // 可能有 1-2 个十六进制数字
+                let mut hex_count = 0;
+                let mut peek_iter = chars.peek();
+                while let Some(&next_c) = peek_iter {
+                    if next_c.is_ascii_hexdigit() {
+                        chars.next();
+                        hex_count += 1;
+                        peek_iter = chars.peek();
+                    } else {
+                        break;
+                    }
+                }
+                // 如果找到十六进制数字，转义序列算 1 字节
+                if hex_count > 0 {
+                    len += 1;
+                } else {
+                    // 没有十六进制数字，只算反斜杠
+                    len += 1;
+                }
+            } else {
+                len += 1;
+            }
+        }
+        len
     }
 
     /**
      * 生成函数
      */
     fn generate_function(&mut self, func: &Function) -> Result<(), CodegenError> {
+        // 跳过内置函数（rt_ 开头的函数只有声明，没有定义）
+        if func.name.starts_with("rt_") {
+            return Ok(());
+        }
+
         // 函数头 - 生成函数签名
         let ret_type = type_to_llvm(&func.return_type);
 
         // 重置函数作用域的变量映射和计数器
-        // （文档建议：每个函数作用域独立计数）
         self.variables.clear();
         self.variable_types.clear();
-        self.label_counter = 0;
         self.closures.clear();
         self.closure_vars.clear();
 
         // 保存当前函数信息（用于尾调用优化）
         let func_name = func.name.clone();
         self.current_function_name = Some(func_name.clone());
+        self.current_function_return_type = func.return_type.clone();
         self.current_function_params = func.params.iter()
             .map(|p| self.translate_func_name(&p.name))
             .collect();
@@ -1202,10 +1422,22 @@ impl CodeGenerator {
             self.variable_types.insert(translated_name.clone(), param_type.to_string());
         }
 
-        // 检查函数是否有显式返回语句
-        let has_return = func.body.statements.iter().any(|stmt| {
-            matches!(stmt, Stmt::Return(_))
-        });
+        // 辅助函数：递归检查语句是否包含返回语句
+        fn contains_return(stmt: &Stmt) -> bool {
+            match stmt {
+                Stmt::Return(_) => true,
+                Stmt::If(if_stmt) => {
+                    if_stmt.branches.iter().any(|b| contains_return(&b.body)) ||
+                    if_stmt.else_branch.as_ref().map_or(false, |b| contains_return(b))
+                }
+                Stmt::Loop(loop_stmt) => contains_return(&loop_stmt.body),
+                Stmt::Block(block) => block.statements.iter().any(|s| contains_return(s)),
+                _ => false,
+            }
+        }
+
+        // 检查函数是否有显式返回语句（包括嵌套）
+        let has_return = func.body.statements.iter().any(|stmt| contains_return(stmt));
 
         // 函数体语句
         for stmt in &func.body.statements {
@@ -1214,24 +1446,14 @@ impl CodeGenerator {
             self.generate_statement(stmt)?;
         }
 
-        // 如果没有返回语句，添加默认返回
-        if !has_return {
-            if func.return_type == Type::Void {
-                self.emit("ret void");
-            } else {
-                self.emit("ret i64 0");
-            }
-        }
-
-        // 如果没有返回语句，添加默认返回和闭包销毁
-        if !has_return {
-            // 在返回前生成闭包销毁调用
+        // 对于 void 函数，总是添加 ret void（LLVM 会优化掉 unreachable code 后的 ret）
+        // 对于非 void 函数，只有当没有显式返回时才添加默认返回
+        if func.return_type == Type::Void {
             self.emit_closure_destroys();
-            if func.return_type == Type::Void {
-                self.emit("ret void");
-            } else {
-                self.emit("ret i64 0");
-            }
+            self.emit("ret void");
+        } else if !has_return {
+            self.emit_closure_destroys();
+            self.emit("ret i64 0");
         }
 
         self.emit("}");
@@ -1509,7 +1731,7 @@ impl CodeGenerator {
 
             // 如果不是尾递归，正常生成返回
             let result = self.generate_expression(value)?;
-            let ret_type = type_to_llvm(&Type::Int); // 简化
+            let ret_type = type_to_llvm(&self.current_function_return_type);
             self.emit(&format!("ret {} %{}", ret_type, result));
         } else {
             self.emit("ret void");
@@ -1541,9 +1763,13 @@ impl CodeGenerator {
             self.in_tail_position = false;  // 重置尾位置标志
             self.generate_statement(&branch.body)?;
             let then_terminated = self.in_tail_position;  // 记录 then 分支是否终止
-            // 只有当 then 分支没有终止指令时才添加跳转
+
+            // then 没有终止，生成跳转
             if !then_terminated {
                 self.emit(&format!("br label %{}", end_label));
+            } else {
+                // then 以 return 等终止，跳转到 else（else 仍然需要可访问）
+                self.emit(&format!("br label %{}", else_label));
             }
 
             // else 分支
@@ -1553,14 +1779,20 @@ impl CodeGenerator {
                 self.generate_statement(else_body)?;
             }
             let else_terminated = self.in_tail_position;  // 记录 else 分支是否终止
+
             // 只有当 else 分支没有终止指令时才添加跳转
             if !else_terminated {
                 self.emit(&format!("br label %{}", end_label));
             }
 
-            // 结束标签：只有当 then 或 else 分支没有终止时才需要
-            if !then_terminated || !else_terminated {
-                self.emit_label(&end_label);
+            // 结束标签
+            // 即使两个分支都终止了（end_label 不可达），仍然需要生成它
+            // 因为后续代码可能通过其他控制流路径跳到这里
+            self.emit_label(&end_label);
+            if then_terminated && else_terminated {
+                // 如果两个分支都终止了，end_label 是不可达的
+                // 添加 unreachable 指令来标记这个基本块
+                self.emit("unreachable");
             }
 
             // if-else 结构结束后：只有当两个分支都终止时才处于尾位置
@@ -1596,9 +1828,12 @@ impl CodeGenerator {
         // 生成循环条件 (如果有)
         if let Some(cond) = &loop_stmt.condition {
             let cond_result = self.generate_expression(cond)?;
+            // 将条件结果转换为 i1（如果还不是 i1 的话）
+            let cond_i1 = self.new_label("cond_bool");
+            self.emit(&format!("%{} = icmp ne i64 %{}, 0", cond_i1, cond_result));
             // 条件为真跳到循环体，为假跳到循环结束
             self.emit(&format!("br i1 %{}, label %{}, label %{}",
-                cond_result, loop_body, loop_end));
+                cond_i1, loop_body, loop_end));
         } else {
             // 无限循环，直接跳到循环体
             self.emit(&format!("br label %{}", loop_body));
@@ -1633,7 +1868,11 @@ impl CodeGenerator {
         self.emit(&format!("br label %{}", loop_start));
 
         // 循环结束标签
+        // 注意：如果循环是无限循环（条件始终为真）且没有 break，loop_end 可能不可达
+        // 但我们仍然需要生成它，因为 break 语句可能跳转到这里
         self.emit_label(&loop_end);
+        // 添加 unreachable 指令，确保标签后有指令
+        self.emit("unreachable");
 
         // 循环结束后处于尾位置
         self.in_tail_position = true;
@@ -1744,7 +1983,8 @@ impl CodeGenerator {
     fn generate_assignment_statement(&mut self, assign_stmt: &AssignmentStmt) -> Result<(), CodegenError> {
         // 生成值表达式
         let value = self.generate_expression(&assign_stmt.value)?;
-        
+        let value_type = self.infer_expression_type(&assign_stmt.value);
+
         // 获取目标变量名并更新映射
         if let Expr::Identifier(ident) = &assign_stmt.target {
             // 翻译变量名（处理中文变量名）
@@ -1754,11 +1994,32 @@ impl CodeGenerator {
                 let var_type = self.variable_types.get(&translated_name)
                     .cloned()
                     .unwrap_or_else(|| "i64".to_string());
-                // 存储到已有变量
-                self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
+
+                // 处理类型不匹配：如果值类型和目标类型不同，需要转换
+                if value_type != var_type {
+                    // 值类型和目标类型不匹配，进行转换
+                    let converted_value = if var_type == "i8*" && value_type == "i64" {
+                        // i64 -> i8* 转换
+                        let ptr = self.new_label("ptr_cast");
+                        self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, value));
+                        ptr
+                    } else if value_type == "i8*" && var_type == "i64" {
+                        // i8* -> i64 转换
+                        let int = self.new_label("int_cast");
+                        self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int, value));
+                        int
+                    } else {
+                        // 其他类型不匹配，使用默认值
+                        value
+                    };
+                    self.emit(&format!("store {} %{}, {}* %{}", var_type, converted_value, var_type, alloca));
+                } else {
+                    // 类型匹配，直接存储
+                    self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
+                }
             } else {
                 // 获取值类型（从表达式推断）
-                let var_type = "i64".to_string(); // 默认类型
+                let var_type = self.infer_expression_type(&assign_stmt.value);
                 // 新变量，分配空间
                 let new_alloca = self.new_label("alloca");
                 self.emit(&format!("%{} = alloca {}", new_alloca, var_type));
@@ -1895,27 +2156,34 @@ impl CodeGenerator {
                 } else {
                     // 结构体字段访问
                     let object_val = self.generate_expression(&member.object)?;
-                    
+
                     // 计算字段偏移
                     let field_offset = self.calculate_field_offset(field_name);
-                    
+
+                    // 根据语义分析确定的成员类型决定指针类型
+                    let ptr_type = if let Some(ref member_ty) = member.get_member_type() {
+                        type_to_llvm(member_ty)
+                    } else {
+                        "i64"  // 默认类型
+                    };
+
                     // 将 i64 值转换为指针
                     let ptr_val = self.new_label("id");
                     self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr_val, object_val));
-                    
+
                     // 生成 GEP 指令获取字段指针
                     let result = self.new_label("member");
-                    self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}", 
+                    self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}",
                         result, ptr_val, field_offset));
-                    
-                    // 将指针转换为 i64 指针
+
+                    // 将指针转换为正确类型的指针
                     let result_ptr = self.new_label("member_ptr");
-                    self.emit(&format!("%{} = bitcast i8* %{} to i64*", result_ptr, result));
-                    
+                    self.emit(&format!("%{} = bitcast i8* %{} to {}*", result_ptr, result, ptr_type));
+
                     // 加载字段值
                     let result_val = self.new_label("member_val");
-                    self.emit(&format!("%{} = load i64, i64* %{}", result_val, result_ptr));
-                    
+                    self.emit(&format!("%{} = load {}, {}* %{}", result_val, ptr_type, ptr_type, result_ptr));
+
                     Ok(result_val)
                 }
             }
@@ -2291,21 +2559,29 @@ impl CodeGenerator {
             }
             LiteralKind::String(s) => {
                 // LLVM IR 中 c"..." 格式自动包含 null 终止符
-                let escaped = s.replace("\\", "\\\\").replace("\"", "\\\"");
-                // 字符串长度（不含终止符）
-                let str_len = escaped.len();
+                // LLVM IR 字符串需要转义: \, ", \n, \r, \t, \0
+                let escaped = s
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\22")
+                    .replace("\n", "\\0A")
+                    .replace("\r", "\\0D")
+                    .replace("\t", "\\09")
+                    .replace("\0", "\\00");
+                // 字符串长度 = LLVM IR 字节数（\XX 转义序列是 1 字节）
+                let str_len = Self::calculate_llvm_string_byte_len(&escaped);
                 // 生成唯一的字符串常量标签
                 let str_label = format!("str_{}", self.label_counter);
                 self.label_counter += 1;
-                // 存储字符串和长度（长度 = 实际字符数，因为 c"..." 会自动加 null）
+                // 存储字符串和长度
                 self.string_constants.insert(str_label.clone(), (escaped.clone(), str_len));
                 // 在函数内部生成 getelementptr 引用
-                let gep = format!("%{} = getelementptr [{} x i8], [{} x i8]* @{}, i32 0, i32 0", 
-                    result, str_len, str_len, str_label);
+                // 数组大小 = 字节数 + 1 (null 终止符)
+                let gep = format!("%{} = getelementptr [{} x i8], [{} x i8]* @{}, i32 0, i32 0",
+                    result, str_len + 1, str_len + 1, str_label);
                 self.emit(&gep);
             }
             LiteralKind::Char(c) => {
-                let value = *c as i32;
+                let value = *c as i64;
                 self.emit(&format!("%{} = add i8 0, {}", result, value));
             }
             LiteralKind::Boolean(b) => {
@@ -2330,57 +2606,114 @@ impl CodeGenerator {
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Ge | BinaryOp::Le);
 
         // 分离比较运算和其他运算的处理
-        let llvm_op = match binary.op {
-            BinaryOp::Add => ("add", "i64"),
-            BinaryOp::Sub => ("sub", "i64"),
-            BinaryOp::Mul => ("mul", "i64"),
-            BinaryOp::Div => ("sdiv", "i64"),
-            BinaryOp::Rem => ("srem", "i64"),
+        let llvm_op: (String, String) = match binary.op {
+            BinaryOp::Add => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "i8*" {
+                    let concat_result = self.new_label("str_concat");
+                    self.emit(&format!("%{} = call i8* @str_concat(i8* %{}, i8* %{})", concat_result, left, right));
+                    return Ok(concat_result);
+                }
+                let (op, tp) = if left_type == "double" { ("fadd", "double") } else { ("add", "i64") };
+                (op.to_string(), tp.to_string())
+            }
+            BinaryOp::Sub => {
+                let left_type = self.infer_expression_type(&binary.left);
+                let (op, tp) = if left_type == "double" { ("fsub", "double") } else { ("sub", "i64") };
+                (op.to_string(), tp.to_string())
+            }
+            BinaryOp::Mul => {
+                let left_type = self.infer_expression_type(&binary.left);
+                let (op, tp) = if left_type == "double" { ("fmul", "double") } else { ("mul", "i64") };
+                (op.to_string(), tp.to_string())
+            }
+            BinaryOp::Div => {
+                let left_type = self.infer_expression_type(&binary.left);
+                let (op, tp) = if left_type == "double" { ("fdiv", "double") } else { ("sdiv", "i64") };
+                (op.to_string(), tp.to_string())
+            }
+            BinaryOp::Rem => {
+                let left_type = self.infer_expression_type(&binary.left);
+                let (op, tp) = if left_type == "double" { ("frem", "double") } else { ("srem", "i64") };
+                (op.to_string(), tp.to_string())
+            }
             BinaryOp::And => {
-                // 逻辑与：
-                // 1. 将操作数与0比较得到 i1 (非零为真)
-                // 2. 执行逻辑与运算 (i1)
-                // 3. 将结果转换回 i64
+                // 逻辑与
                 let left_cond = self.new_label("left_cond");
                 let right_cond = self.new_label("right_cond");
-
                 self.emit(&format!("%{} = icmp ne i64 %{}, 0", left_cond, left));
                 self.emit(&format!("%{} = icmp ne i64 %{}, 0", right_cond, right));
-
                 let and_result = self.new_label("and_result");
                 self.emit(&format!("%{} = and i1 %{}, %{}", and_result, left_cond, right_cond));
                 self.emit(&format!("%{} = zext i1 %{} to i64", result, and_result));
                 return Ok(result);
             }
             BinaryOp::Or => {
-                // 逻辑或：
-                // 1. 将操作数与0比较得到 i1
-                // 2. 执行逻辑或运算 (i1)
-                // 3. 将结果转换回 i64
+                // 逻辑或
                 let left_cond = self.new_label("left_cond");
                 let right_cond = self.new_label("right_cond");
-
                 self.emit(&format!("%{} = icmp ne i64 %{}, 0", left_cond, left));
                 self.emit(&format!("%{} = icmp ne i64 %{}, 0", right_cond, right));
-
                 let or_result = self.new_label("or_result");
                 self.emit(&format!("%{} = or i1 %{}, %{}", or_result, left_cond, right_cond));
                 self.emit(&format!("%{} = zext i1 %{} to i64", result, or_result));
                 return Ok(result);
             }
-            BinaryOp::Eq => ("icmp eq", "i64"),
-            BinaryOp::Ne => ("icmp ne", "i64"),
-            BinaryOp::Gt => ("icmp sgt", "i64"),
-            BinaryOp::Lt => ("icmp slt", "i64"),
-            BinaryOp::Ge => ("icmp sge", "i64"),
-            BinaryOp::Le => ("icmp sle", "i64"),
-            BinaryOp::BitAnd => ("and", "i64"),
-            BinaryOp::BitOr => ("or", "i64"),
-            BinaryOp::BitXor => ("xor", "i64"),
-            BinaryOp::Shl => ("shl", "i64"),
-            BinaryOp::Shr => ("lshr", "i64"),
-            BinaryOp::Hash => ("xor", "i64"),
-            BinaryOp::Assign => ("add", "i64"),
+            BinaryOp::Eq => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp oeq".to_string(), left_type)
+                } else {
+                    ("icmp eq".to_string(), left_type)
+                }
+            }
+            BinaryOp::Ne => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp one".to_string(), left_type)
+                } else {
+                    ("icmp ne".to_string(), left_type)
+                }
+            }
+            BinaryOp::Gt => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp ogt".to_string(), left_type)
+                } else {
+                    ("icmp sgt".to_string(), left_type)
+                }
+            }
+            BinaryOp::Lt => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp olt".to_string(), left_type)
+                } else {
+                    ("icmp slt".to_string(), left_type)
+                }
+            }
+            BinaryOp::Ge => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp oge".to_string(), left_type)
+                } else {
+                    ("icmp sge".to_string(), left_type)
+                }
+            }
+            BinaryOp::Le => {
+                let left_type = self.infer_expression_type(&binary.left);
+                if left_type == "double" {
+                    ("fcmp ole".to_string(), left_type)
+                } else {
+                    ("icmp sle".to_string(), left_type)
+                }
+            }
+            BinaryOp::BitAnd => ("and".to_string(), "i64".to_string()),
+            BinaryOp::BitOr => ("or".to_string(), "i64".to_string()),
+            BinaryOp::BitXor => ("xor".to_string(), "i64".to_string()),
+            BinaryOp::Shl => ("shl".to_string(), "i64".to_string()),
+            BinaryOp::Shr => ("lshr".to_string(), "i64".to_string()),
+            BinaryOp::Hash => ("xor".to_string(), "i64".to_string()),
+            BinaryOp::Assign => ("add".to_string(), "i64".to_string()),
         };
 
         // 处理赋值运算符
@@ -2417,12 +2750,38 @@ impl CodeGenerator {
 
         // 生成运算指令
         if is_comparison {
-            // 比较运算：先生成 i1 结果，再转换为 i64 (0或1)
+            // 比较运算：需要确保左右操作数类型匹配
+            let left_type = self.infer_expression_type(&binary.left);
+            let right_type = self.infer_expression_type(&binary.right);
+            let cmp_type = llvm_op.1.clone();
+
+            // 如果类型不匹配，进行转换
+            let (left_val, right_val) = if left_type != cmp_type {
+                let left_converted = self.new_label("conv");
+                let right_converted = self.new_label("conv");
+                if cmp_type == "double" {
+                    // 转换为 double
+                    self.emit(&format!("%{} = sitofp i64 %{} to double", left_converted, left));
+                    self.emit(&format!("%{} = sitofp i64 %{} to double", right_converted, right));
+                } else if left_type == "i64" && cmp_type == "i8" {
+                    // i64 转换为 i8
+                    self.emit(&format!("%{} = trunc i64 %{} to i8", left_converted, left));
+                    self.emit(&format!("%{} = trunc i64 %{} to i8", right_converted, right));
+                } else {
+                    // 扩展到目标类型
+                    self.emit(&format!("%{} = sext {} %{} to {}", left_converted, left_type, left, cmp_type));
+                    self.emit(&format!("%{} = sext {} %{} to {}", right_converted, left_type, right, cmp_type));
+                }
+                (left_converted, right_converted)
+            } else {
+                (left.clone(), right.clone())
+            };
+
             let cmp_result = self.new_label("cmp");
-            self.emit(&format!("%{} = {} i64 %{}, %{}", cmp_result, llvm_op.0, left, right));
+            self.emit(&format!("%{} = {} {} %{}, %{}", cmp_result, llvm_op.0, cmp_type, left_val, right_val));
             self.emit(&format!("%{} = zext i1 %{} to i64", result, cmp_result));
         } else {
-            // 算术运算：结果类型是 i64
+            // 算术运算：使用实际类型（可能是 double 或 i64）
             self.emit(&format!("%{} = {} {} %{}, %{}", result, llvm_op.0, llvm_op.1, left, right));
         }
 
@@ -2438,8 +2797,13 @@ impl CodeGenerator {
 
         match unary.op {
             UnaryOp::Neg => {
-                // 负数：0 - operand
-                self.emit(&format!("%{} = sub i64 0, %{}", result, operand));
+                // 负数：0 - operand，根据类型使用 fsub 或 sub
+                let operand_type = self.infer_expression_type(&unary.operand);
+                if operand_type == "double" {
+                    self.emit(&format!("%{} = fsub double 0.0, %{}", result, operand));
+                } else {
+                    self.emit(&format!("%{} = sub i64 0, %{}", result, operand));
+                }
             }
             UnaryOp::Not => {
                 // 逻辑非：
@@ -2465,10 +2829,15 @@ impl CodeGenerator {
      * 生成函数调用表达式
      */
     fn generate_call_expr(&mut self, call: &CallExpr) -> Result<String, CodegenError> {
-        // 获取函数名
-        let func_name = match &*call.function {
-            Expr::Identifier(ident) => ident.name.clone(),
-            _ => "unknown".to_string(),
+        // 获取函数名和处理方法调用
+        let (func_name, is_method_call, method_object) = match &*call.function {
+            Expr::Identifier(ident) => (ident.name.clone(), false, None),
+            Expr::MemberAccess(member) => {
+                // 方法调用：MemberAccess(member_object, method_name)
+                let object_val = self.generate_expression(&member.object)?;
+                (member.member.clone(), true, Some(object_val))
+            }
+            _ => ("unknown".to_string(), false, None),
         };
 
         // 检查是否是闭包调用
@@ -2476,7 +2845,9 @@ impl CodeGenerator {
         let is_closure_call = self.closures.contains_key(&closure_name);
 
         // 检查是否是内置函数
-        let is_builtin_print = func_name == "打印" || func_name == "print";
+        let is_builtin_print = func_name == "打印" || func_name == "print"
+            || func_name == "打印换行" || func_name == "打印文本" || func_name == "打印整数"
+            || func_name == "打印浮点" || func_name == "打印布尔";
         let is_builtin_to_int = func_name == "文本转整数" || func_name == "str_to_int";
         let is_builtin_to_str = func_name == "整数转文本" || func_name == "int_to_str";
         
@@ -2498,7 +2869,9 @@ impl CodeGenerator {
         let is_str_concat = func_name == "文本拼接" || func_name == "str_concat";
         let is_str_slice = func_name == "文本切片" || func_name == "str_slice";
         let is_str_contains = func_name == "文本包含" || func_name == "str_contains";
-        let is_str_func = is_str_len || is_str_concat || is_str_slice || is_str_contains;
+        let is_str_substr = func_name == "提取子串" || func_name == "substring";
+        let is_str_char_at = func_name == "文本获取字符" || func_name == "str_char_at";
+        let is_str_func = is_str_len || is_str_concat || is_str_slice || is_str_contains || is_str_substr || is_str_char_at;
         
         // 检查是否是命令行参数函数
         let is_arg_count = func_name == "参数个数" || func_name == "argc";
@@ -2509,6 +2882,8 @@ impl CodeGenerator {
         let llvm_func_call_name = match func_name.as_str() {
             // 内置函数
             "打印" => "print".to_string(),
+            "打印换行" => "print".to_string(),
+            "打印文本" => "print".to_string(),
             "打印整数" => "print_int".to_string(),
             "打印浮点" => "print_float".to_string(),
             "打印布尔" => "print_bool".to_string(),
@@ -2519,14 +2894,19 @@ impl CodeGenerator {
             "列表添加" => "list_add".to_string(),
             "列表获取" => "list_get".to_string(),
             "列表长度" => "list_len".to_string(),
-            // 控制台输入函数
-            "输入整数" => "\"输入整数\"".to_string(),
-            "输入文本" => "\"输入文本\"".to_string(),
+            // 列表方法（通过 . 语法调用）
+            "追加" => "rt_list_append".to_string(),
+            "获取" => "rt_list_get".to_string(),
+            "长度" => "rt_list_len".to_string(),
+            // 控制台输入函数（映射到 C 运行时函数）
+            "输入整数" => "rt_input_int".to_string(),
+            "输入文本" => "rt_input_text".to_string(),
             // 文本函数
             "文本长度" => "rt_string_len".to_string(),
             "文本拼接" => "str_concat".to_string(),
             "文本切片" => "str_slice".to_string(),
             "文本包含" => "str_contains".to_string(),
+            "文本获取字符" => "rt_string_char_at".to_string(),
             // 命令行参数函数
             "参数个数" => "argc".to_string(),
             "获取参数" => "argv".to_string(),
@@ -2556,10 +2936,11 @@ impl CodeGenerator {
         // 区分内置函数和用户函数
         // 内置函数使用 ASCII 名称，用户函数使用 emit_func_decl 转义
         let is_builtin = matches!(func_name.as_str(), 
-            "打印" | "打印整数" | "打印浮点" | "打印布尔" |
-            "文本转整数" | "整数转文本" | "创建列表" | "列表添加" | "列表获取" | "列表长度" |
+            "打印" | "打印换行" | "打印文本" | "打印整数" | "打印浮点" | "打印布尔" |
+            "文本转整数" | "整数转文本" | "创建列表" | "列表" | "列表添加" | "列表获取" | "列表长度" |
+            "追加" | "获取" | "长度" |
             "输入整数" | "输入文本" |
-            "文本长度" | "文本拼接" | "文本切片" | "文本包含" |
+            "文本长度" | "文本拼接" | "文本切片" | "文本包含" | "提取子串" | "文本获取字符" |
             "参数个数" | "获取参数" |
             "文件读取" | "文件写入" | "文件存在" | "文件删除" |
             "执行命令" | "命令输出" |
@@ -2592,12 +2973,19 @@ impl CodeGenerator {
         // 对于打印函数，需要根据参数类型选择正确的打印函数
         let mut actual_print_func = llvm_func_call_name.clone();
         let mut args = Vec::new();
-        
+
+        // 如果是方法调用，将对象指针作为第一个参数
+        if is_method_call {
+            if let Some(obj_ptr) = method_object {
+                args.push(format!("i8* %{}", obj_ptr));
+            }
+        }
+
         for (idx, arg) in call.arguments.iter().enumerate() {
             let arg_val = self.generate_expression(arg)?;
-            if is_str_slice {
-                // 文本切片需要 (i8*, i64, i64)
-                // idx=0: 字符串 (i8*), idx=1: 起始位置 (i64), idx=2: 结束位置 (i64)
+            if is_str_slice || is_str_substr {
+                // 文本切片/提取子串需要 (i8*, i64, i64)
+                // idx=0: 字符串 (i8*), idx=1,2: 起始/结束位置 (i64)
                 if idx == 0 {
                     args.push(format!("i8* %{}", arg_val));
                 } else {
@@ -2629,8 +3017,13 @@ impl CodeGenerator {
                     }
                 }
             } else if is_builtin_to_int || is_file_func || is_str_func {
-                // 文本转整数、文件函数、字符串函数接受 i8* 字符串指针
-                args.push(format!("i8* %{}", arg_val));
+                // 文本转整数、文件函数、字符串函数
+                // 但文本获取字符的第二个参数是索引 (i64)
+                if is_str_char_at && idx == 1 {
+                    args.push(format!("i64 %{}", arg_val));
+                } else {
+                    args.push(format!("i8* %{}", arg_val));
+                }
             } else if is_builtin_to_str {
                 // 整数转文本接受 i64
                 args.push(format!("i64 %{}", arg_val));
@@ -2688,17 +3081,25 @@ impl CodeGenerator {
         let (ret_type, is_void_call) = if is_builtin_print {
             // 打印函数返回 void
             ("void".to_string(), true)
-        } else if is_builtin_to_str || is_list_create || is_str_concat || is_str_slice || is_arg_get || is_file_read || is_cmd_output || is_input_text {
+        } else if is_builtin_to_str || is_list_create || is_list_constructor || is_str_concat || is_str_slice || is_str_char_at || is_arg_get || is_file_read || is_cmd_output || is_input_text {
             // 整数转文本、创建列表、字符串拼接/切片、获取参数、文件读取、命令输出、输入文本返回 i8*
             ("i8*".to_string(), false)
         } else if is_str_len || is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int || is_list_len || is_list_get || is_str_contains {
             // 字符串长度、文件写入、参数个数、文件存在、文件删除、执行命令、输入整数、列表长度、列表获取、字符串包含返回 i64
             ("i64".to_string(), false)
-        } else if !is_builtin {
-            // 用户函数（非内置函数）返回 i64（假设）
+        } else if func_name == "外部" {
+            // 外部函数调用返回 i8*
+            ("i8*".to_string(), false)
+        } else if is_builtin {
+            // 内置函数返回 i64
             ("i64".to_string(), false)
+        } else if let Some(func) = self.function_signatures.get(&func_name) {
+            // 用户函数：根据函数签名确定返回类型
+            let ret_type_str = type_to_llvm(&func.return_type).to_string();
+            let is_void = func.return_type == Type::Void;
+            (ret_type_str, is_void)
         } else {
-            // 其他内置函数返回 i64
+            // 未知用户函数返回 i64（默认）
             ("i64".to_string(), false)
         };
         
@@ -2784,8 +3185,8 @@ impl CodeGenerator {
         } else {
             let args_str = args.join(", ");
 
-            if is_builtin_to_str || is_list_create || is_str_concat || is_str_slice || is_arg_get || is_file_read || is_cmd_output || is_input_text {
-                // 整数转文本、创建列表、字符串拼接/切片、获取参数、文件读取、命令输出、输入文本返回 i8*
+            if is_builtin_to_str || is_list_create || is_list_constructor || is_str_concat || is_str_slice || is_str_substr || is_str_char_at || is_arg_get || is_file_read || is_cmd_output || is_input_text {
+                // 整数转文本、创建列表、列表()、字符串拼接/切片/子串/获取字符、获取参数、文件读取、命令输出、输入文本返回 i8*
                 self.emit(&format!("%{} = call i8* @{}({})", result, llvm_func_ref, args_str));
             } else if is_str_len || is_file_write || is_arg_count || is_file_exists || is_file_delete || is_exec_cmd || is_input_int || is_list_len || is_list_get || is_str_contains {
                 // 字符串长度、文件写入、参数个数、文件存在、文件删除、执行命令、输入整数、列表长度、列表获取、字符串包含返回 i64
@@ -2795,9 +3196,17 @@ impl CodeGenerator {
                 self.emit(&format!("call void @{}({})", llvm_func_ref, args_str));
                 // 为保持 SSA 形式，生成一个虚拟返回值
                 self.emit(&format!("%{} = add i64 0, 0", result));
+            } else if is_list_constructor {
+                // 列表() 构造函数返回 i8*
+                self.emit(&format!("%{} = call i8* @{}({})", result, llvm_func_ref, args_str));
             } else if !is_builtin {
-                // 用户函数（非内置函数）
-                self.emit(&format!("%{} = call i64 @{}({})", result, llvm_func_ref, args_str));
+                // 用户函数（非内置函数）- 根据函数签名确定返回类型
+                if let Some(func) = self.function_signatures.get(&func_name) {
+                    let ret_type = type_to_llvm(&func.return_type);
+                    self.emit(&format!("%{} = call {} @{}({})", result, ret_type, llvm_func_ref, args_str));
+                } else {
+                    self.emit(&format!("%{} = call i64 @{}({})", result, llvm_func_ref, args_str));
+                }
             } else {
                 // 其他内置函数返回 i64
                 self.emit(&format!("%{} = call i64 @{}({})", result, llvm_func_ref, args_str));

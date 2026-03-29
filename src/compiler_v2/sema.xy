@@ -138,6 +138,37 @@
 }
 
 /**
+ * 获取符号类型
+ */
+函数 获取符号类型(sema: Sema, 名称: 文本): 整数 {
+    定义 可变 scopeIdx: 整数
+    scopeIdx = sema.当前作用域
+
+    当 scopeIdx >= 0 && scopeIdx < 列表长度(sema.作用域栈) 则 {
+        定义 可变 scope: 作用域
+        scope = sema.作用域栈[scopeIdx]
+
+        定义 可变 i: 整数
+        i = 0
+        当 i < 列表长度(scope.符号表) 则 {
+            定义 可变 sym: 符号
+            sym = scope.符号表[i]
+            若 sym.名称 == 名称 则 {
+                返回 sym.类型
+            }
+            i = i + 1
+        }
+
+        若 scope.父作用域 < 0 则 {
+            返回 -1
+        }
+        scopeIdx = scope.父作用域
+    }
+
+    返回 -1
+}
+
+/**
  * 在当前作用域查找符号（不向上查找父作用域）
  */
 函数 在当前作用域查找符号(sema: Sema, 名称: 文本): 整数 {
@@ -1171,7 +1202,7 @@
                     errorCount = errorCount + 1
                 }
             } 否则 {
-                若 child.kind == 22 则 {
+                若 child.kind == 21 则 {
                     /* 结构体定义 */
                     定义 可变 result: 整数
                     result = sema遍历结构体定义(sema, child)
@@ -1179,7 +1210,7 @@
                         errorCount = errorCount + 1
                     }
                 } 否则 {
-                    若 child.kind == 23 则 {
+                    若 child.kind == 22 则 {
                         /* 枚举定义 */
                         定义 可变 result: 整数
                         result = sema遍历枚举定义(sema, child)
@@ -1269,14 +1300,19 @@
     定义 可变 body: AST节点
     body = funcNode.children[0]
 
+    打印("函数体 kind=")
+    打印(body.kind)
+
     定义 可变 result: 整数
     result = 0
 
     若 body.kind == 8 则 {
         /* 块语句 */
+        打印("遍历块语句")
         result = sema遍历块语句(sema, body)
     } 否则 {
         /* 单表达式函数体 */
+        打印("遍历表达式")
         定义 可变 exprType: 整数
         exprType = sema遍历表达式(sema, body)
     }
@@ -1345,6 +1381,27 @@
                         若 stmt.kind == 4 则 {
                             /* return 语句 */
                             result = sema遍历返回语句(sema, stmt)
+                        } 否则 {
+                            若 stmt.kind == 10 则 {
+                                /* 二元表达式语句 */
+                                定义 可变 leftChild: AST节点
+                                定义 可变 rightChild: AST节点
+                                leftChild = 列表获取(stmt.children, 0)
+                                rightChild = 列表获取(stmt.children, 1)
+                                result = sema遍历二元表达式(sema, stmt.name, leftChild, rightChild)
+                            } 否则 {
+                                若 stmt.kind == 25 则 {
+                                    /* match 语句 */
+                                    定义 可变 matchSubject: AST节点
+                                    matchSubject = 列表获取(stmt.children, 0)
+                                    定义 可变 subjectType: 整数
+                                    subjectType = sema遍历表达式(sema, matchSubject)
+
+                                    定义 可变 branchCount: 整数
+                                    branchCount = 列表长度(stmt.children) - 1
+                                    result = 分析Match语句(sema, subjectType, branchCount)
+                                }
+                            }
                         }
                     }
                 }
@@ -1565,7 +1622,9 @@
         返回 -1
     }
 
-    返回 0  /* 返回变量类型 */
+    定义 可变 symType: 整数
+    symType = 获取符号类型(sema, name)
+    返回 symType
 }
 
 /**
@@ -1580,12 +1639,24 @@
 
     /* 检查类型兼容性 */
     若 类型兼容(leftType, rightType) == 0 则 {
-        报告警告(sema, "二元运算操作数类型不匹配", 0)
+        报告错误(sema, "二元运算操作数类型不匹配", 0)
+    }
+
+    /* 比较运算需要整数或浮点类型，不支持指针/文本类型直接比较 */
+    若 op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" 则 {
+        若 leftType < 0 || leftType == 3 || leftType == 6 则 {
+            报告错误(sema, "文本类型不支持直接比较，请使用运行时字符串比较函数", 0)
+        }
     }
 
     /* 返回结果类型 */
     若 op == "+" || op == "-" || op == "*" || op == "/" || op == "%" 则 {
         返回 leftType  /* 算术运算返回左操作数类型 */
+    }
+
+    /* 如果左操作数是文本类型，比较结果应该通过运行时函数返回，这里返回整数表示错误 */
+    若 leftType < 0 || leftType == 3 || leftType == 6 则 {
+        返回 0  /* 返回整数表示类型错误 */
     }
 
     返回 2  /* 比较和逻辑运算返回布尔类型 */

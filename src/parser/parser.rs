@@ -49,6 +49,18 @@ impl Parser {
     }
 
     /**
+     * 向前看指定关键字
+     */
+    fn peek_keyword(&self, keyword: &Keyword) -> bool {
+        if let Some(token) = self.peek(1) {
+            if let TokenType::Keyword(k) = &token.token_type {
+                return k == keyword;
+            }
+        }
+        false
+    }
+
+    /**
      * 向前移动一个位置，返回前一个 Token
      */
     fn advance(&mut self) -> Option<&Token> {
@@ -148,6 +160,7 @@ impl Parser {
         let mut enums = Vec::new();
         let mut type_aliases = Vec::new();
         let mut constants = Vec::new();
+        let mut variables = Vec::new();
         let mut extern_functions = Vec::new();
         let mut macros = Vec::new();
         let start_span = self.current()
@@ -186,6 +199,20 @@ impl Parser {
                     Ok(c) => constants.push(c),
                     Err(e) => return Err(e),
                 }
+            } else if self.check(&TokenType::Keyword(Keyword::定义)) {
+                let is_mutable = self.peek_keyword(&Keyword::可变);
+                if is_mutable {
+                    match self.parse_let_statement() {
+                        Ok(stmt) => {
+                            if let Stmt::Let(let_stmt) = stmt {
+                                variables.push(let_stmt);
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    self.advance();
+                }
             } else if self.check(&TokenType::Keyword(Keyword::外部)) {
                 match self.parse_extern_function() {
                     Ok(e) => extern_functions.push(e),
@@ -212,6 +239,7 @@ impl Parser {
         module.enums = enums;
         module.type_aliases = type_aliases;
         module.constants = constants;
+        module.variables = variables;
         module.extern_functions = extern_functions;
         module.macros = macros;
         Ok(module)
@@ -1607,8 +1635,7 @@ impl Parser {
             let exception_type = if self.match_token(&TokenType::冒号) {
                 let type_name = match self.current() {
                     Some(Token { token_type: TokenType::标识符, literal, .. }) => literal.clone(),
-                    Some(Token { token_type: TokenType::Keyword(k), literal, .. }) => {
-                        // 处理关键字作为类型名的情况
+                    Some(Token { token_type: TokenType::Keyword(_k), literal, .. }) => {
                         literal.clone()
                     },
                     _ => return Err(ParserError::unexpected_token(

@@ -119,6 +119,18 @@ int64_t rt_string_len(void* str) {
     return strlen((char*)str);
 }
 
+void* rt_string_char_at(void* str, int64_t index) {
+    if (!str) return NULL;
+    char* s = (char*)str;
+    int64_t len = strlen(s);
+    if (index < 0 || index >= len) return strdup("");
+    char* result = (char*)malloc(2);
+    if (!result) return NULL;
+    result[0] = s[index];
+    result[1] = '\0';
+    return result;
+}
+
 void* str_concat(void* a, void* b) {
     if (!a || !b) return NULL;
     size_t len_a = strlen((char*)a);

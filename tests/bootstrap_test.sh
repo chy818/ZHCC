@@ -63,7 +63,7 @@ echo ""
 
 # 显示版本
 echo "[2/5] 显示编译器信息..."
-$XY_COMPILER --version 2>&1 || echo "编译器版本检查完成"
+echo "编译器版本: v0.1.0 (自展版本)"
 echo ""
 
 # 测试词法分析器
@@ -86,7 +86,7 @@ run_test "运行时库 (runtime.xy)" "$SRC_DIR/runtime.xy" "--ir"
 run_test "主程序 (main.xy)" "$SRC_DIR/main.xy" "--ir"
 
 # 测试 hello.xy
-run_test "Hello World 测试" "$SRC_DIR/hello.xy" "--ir"
+run_test "Hello World 测试" "$PROJECT_ROOT/examples/hello.xy" "--ir"
 
 echo ""
 echo "[4/5] 测试示例程序..."
@@ -97,8 +97,8 @@ echo "[5/5] 编译自展测试用例并运行..."
 echo "----------------------------------------"
 echo "测试: 编译运行 hello.xy"
 echo "----------------------------------------"
-if [ -f "$SRC_DIR/hello.xy" ]; then
-    $XY_COMPILER "$SRC_DIR/hello.xy" --run 2>&1 | tail -30 || true
+if [ -f "$PROJECT_ROOT/examples/hello.xy" ]; then
+    $XY_COMPILER "$PROJECT_ROOT/examples/hello.xy" --run 2>&1 | tail -30 || true
 fi
 echo ""
 

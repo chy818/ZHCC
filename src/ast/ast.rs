@@ -5,6 +5,8 @@
  */
 
 use crate::lexer::token::{Token, TokenType, Span};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /**
  * AST 节点基 trait
@@ -311,11 +313,24 @@ pub struct MemberAccessExpr {
     pub object: Box<Expr>,
     pub member: String,
     pub span: Span,
+    pub member_type: Rc<RefCell<Option<Type>>>,
 }
 
 impl MemberAccessExpr {
     pub fn new(object: Box<Expr>, member: String, span: Span) -> Self {
-        Self { object, member, span }
+        Self { object, member, span, member_type: Rc::new(RefCell::new(None)) }
+    }
+
+    pub fn with_type(object: Box<Expr>, member: String, span: Span, member_type: Type) -> Self {
+        Self { object, member, span, member_type: Rc::new(RefCell::new(Some(member_type))) }
+    }
+
+    pub fn get_member_type(&self) -> Option<Type> {
+        self.member_type.borrow().clone()
+    }
+
+    pub fn set_member_type(&self, t: Type) {
+        *self.member_type.borrow_mut() = Some(t);
     }
 }
 
@@ -1206,6 +1221,7 @@ pub struct Module {
     pub enums: Vec<EnumDefinition>,
     pub type_aliases: Vec<TypeAlias>,
     pub constants: Vec<ConstantDef>,
+    pub variables: Vec<LetStmt>,
     pub extern_functions: Vec<ExternFunction>,
     pub macros: Vec<MacroDef>,
     pub span: Span,
@@ -1220,6 +1236,7 @@ impl Module {
             enums: Vec::new(),
             type_aliases: Vec::new(),
             constants: Vec::new(),
+            variables: Vec::new(),
             extern_functions: Vec::new(),
             macros: Vec::new(),
             span

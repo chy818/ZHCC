@@ -194,13 +194,14 @@ fn compile_file(filename: &str, mode: RunMode) -> Result<(), String> {
                 Ok(output) => {
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        // 清理临时文件
-                        let _ = fs::remove_file(temp_ir);
+                        // 保留 IR 文件用于调试
+                        eprintln!("IR 文件保存在: {}", temp_ir);
                         return Err(format!("llc 执行失败: {}", stderr));
                     }
                 }
                 Err(e) => {
-                    let _ = fs::remove_file(temp_ir);
+                    // 保留 IR 文件用于调试
+                    eprintln!("IR 文件保存在: {}", temp_ir);
                     return Err(format!("无法执行 llc: {}\n请确保已安装 LLVM 并配置环境变量。", e));
                 }
             }
