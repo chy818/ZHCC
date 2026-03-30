@@ -2035,6 +2035,86 @@ impl CodeGenerator {
     }
 
     /**
+     * 获取赋值目标的指针（不加载值）
+     * 支持标识符和 MemberAccess 作为赋值目标
+     * 返回 (指针名称, 指针类型)
+     */
+    fn get_assignment_target_ptr(&mut self, target: &Expr) -> Result<(String, String), CodegenError> {
+        match target {
+            Expr::Identifier(ident) => {
+                // 翻译变量名（处理中文变量名）
+                let translated_name = self.translate_func_name(&ident.name);
+                if let Some(alloca) = self.variables.get(&translated_name).cloned() {
+                    // 获取变量类型
+                    let var_type = self.variable_types.get(&translated_name)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    Ok((alloca, var_type))
+                } else if let Some(alloca) = self.variables.get(&ident.name).cloned() {
+                    // 尝试原始名称（处理枚举变体等未翻译的名称）
+                    let var_type = self.variable_types.get(&ident.name)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    Ok((alloca, var_type))
+                } else {
+                    Err(CodegenError {
+                        code: "C002".to_string(),
+                        message: format!("未找到变量 '{}'", ident.name),
+                    })
+                }
+            }
+            Expr::MemberAccess(member) => {
+                // 结构体字段访问作为赋值目标
+                let field_name = &member.member;
+                
+                // 生成对象表达式
+                let object_val = self.generate_expression(&member.object)?;
+                
+                // 计算字段偏移
+                let field_offset = self.calculate_field_offset(field_name);
+                
+                // 根据语义分析或字段名推断成员类型
+                let ptr_type = if let Some(ref member_ty) = member.get_member_type() {
+                    type_to_llvm(member_ty)
+                } else {
+                    self.infer_member_type(field_name)
+                };
+                
+                // 获取对象类型
+                let obj_type = self.infer_expression_type(&member.object);
+                
+                // 将对象值转换为 i8* 指针（仅当类型为 i64 时才需要转换）
+                let ptr_val = if obj_type == "i64" {
+                    // 需要转换
+                    let ptr = self.new_label("ptr");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, object_val));
+                    ptr
+                } else {
+                    // 已经是 i8* 类型，直接使用
+                    object_val
+                };
+                
+                // 生成 GEP 指令获取字段指针
+                let result = self.new_label("member");
+                self.emit(&format!("%{} = getelementptr i8, i8* %{}, i32 {}",
+                    result, ptr_val, field_offset));
+                
+                // 将指针转换为正确类型的指针
+                let result_ptr = self.new_label("member_ptr");
+                self.emit(&format!("%{} = bitcast i8* %{} to {}*", result_ptr, result, ptr_type));
+                
+                Ok((result_ptr, ptr_type.to_string()))
+            }
+            _ => {
+                Err(CodegenError {
+                    code: "C003".to_string(),
+                    message: "不支持的赋值目标类型".to_string(),
+                })
+            }
+        }
+    }
+
+    /**
      * 生成赋值语句
      */
     fn generate_assignment_statement(&mut self, assign_stmt: &AssignmentStmt) -> Result<(), CodegenError> {
@@ -2042,51 +2122,44 @@ impl CodeGenerator {
         let value = self.generate_expression(&assign_stmt.value)?;
         let value_type = self.infer_expression_type(&assign_stmt.value);
 
-        // 获取目标变量名并更新映射
-        if let Expr::Identifier(ident) = &assign_stmt.target {
-            // 翻译变量名（处理中文变量名）
-            let translated_name = self.translate_func_name(&ident.name);
-            if let Some(alloca) = self.variables.get(&translated_name).cloned() {
-                // 获取变量类型
-                let var_type = self.variable_types.get(&translated_name)
-                    .cloned()
-                    .unwrap_or_else(|| "i64".to_string());
-
-                // 处理类型不匹配：如果值类型和目标类型不同，需要转换
-                if value_type != var_type {
-                    // 值类型和目标类型不匹配，进行转换
-                    let converted_value = if var_type == "i8*" && value_type == "i64" {
-                        // i64 -> i8* 转换
-                        let ptr = self.new_label("ptr_cast");
-                        self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, value));
-                        ptr
-                    } else if value_type == "i8*" && var_type == "i64" {
-                        // i8* -> i64 转换
-                        let int = self.new_label("int_cast");
-                        self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int, value));
-                        int
-                    } else {
-                        // 其他类型不匹配，使用默认值
-                        value
-                    };
-                    self.emit(&format!("store {} %{}, {}* %{}", var_type, converted_value, var_type, alloca));
+        // 获取目标指针和类型
+        if let Ok((target_ptr, target_type)) = self.get_assignment_target_ptr(&assign_stmt.target) {
+            // 处理类型不匹配：如果值类型和目标类型不同，需要转换
+            if value_type != target_type {
+                // 值类型和目标类型不匹配，进行转换
+                let converted_value = if target_type == "i8*" && value_type == "i64" {
+                    // i64 -> i8* 转换
+                    let ptr = self.new_label("ptr_cast");
+                    self.emit(&format!("%{} = inttoptr i64 %{} to i8*", ptr, value));
+                    ptr
+                } else if value_type == "i8*" && target_type == "i64" {
+                    // i8* -> i64 转换
+                    let int = self.new_label("int_cast");
+                    self.emit(&format!("%{} = ptrtoint i8* %{} to i64", int, value));
+                    int
                 } else {
-                    // 类型匹配，直接存储
-                    self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, alloca));
-                }
+                    // 其他类型不匹配，使用默认值
+                    value
+                };
+                self.emit(&format!("store {} %{}, {}* %{}", target_type, converted_value, target_type, target_ptr));
             } else {
-                // 获取值类型（从表达式推断）
-                let var_type = self.infer_expression_type(&assign_stmt.value);
-                // 新变量，分配空间
-                let new_alloca = self.new_label("alloca");
-                self.emit(&format!("%{} = alloca {}", new_alloca, var_type));
-                self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, new_alloca));
-                self.variables.insert(translated_name.clone(), new_alloca);
-                self.variable_types.insert(translated_name.clone(), var_type);
+                // 类型匹配，直接存储
+                self.emit(&format!("store {} %{}, {}* %{}", target_type, value, target_type, target_ptr));
             }
+        } else if let Expr::Identifier(ident) = &assign_stmt.target {
+            // 如果是新变量声明（目标指针获取失败，说明是新变量）
+            let translated_name = self.translate_func_name(&ident.name);
+            // 获取值类型（从表达式推断）
+            let var_type = self.infer_expression_type(&assign_stmt.value);
+            // 新变量，分配空间
+            let new_alloca = self.new_label("alloca");
+            self.emit(&format!("%{} = alloca {}", new_alloca, var_type));
+            self.emit(&format!("store {} %{}, {}* %{}", var_type, value, var_type, new_alloca));
+            self.variables.insert(translated_name.clone(), new_alloca);
+            self.variable_types.insert(translated_name.clone(), var_type);
         } else {
-            // 目标不是标识符，生成注释
-            self.emit(&format!("; 赋值目标不是标识符"));
+            // 目标不是标识符且无法获取指针，生成注释
+            self.emit(&format!("; 不支持的赋值目标"));
         }
 
         Ok(())
