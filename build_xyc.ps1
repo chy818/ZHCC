@@ -34,7 +34,7 @@ Write-Host ""
 
 Write-Host "[3/6] Compiling XY modules to IR..."
 $xyFiles = @(
-    "src\compiler_v2\compiler.xy"
+    "src\compiler_v2\main.xy"
 )
 
 $successCount = 0
