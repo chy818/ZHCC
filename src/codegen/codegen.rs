@@ -545,6 +545,24 @@ impl CodeGenerator {
     }
 
     fn emit(&mut self, line: &str) {
+        // 检查是否包含中文字符，如果是则跳过
+        let has_chinese = line.chars().any(|c| {
+            // 检查是否是中文字符范围
+            (c >= '\u{4e00}' && c <= '\u{9fff}') ||
+            (c >= '\u{3400}' && c <= '\u{4dbf}') ||
+            (c >= '\u{20000}' && c <= '\u{2a6df}') ||
+            (c >= '\u{2a700}' && c <= '\u{2b73f}') ||
+            (c >= '\u{2b740}' && c <= '\u{2b81f}') ||
+            (c >= '\u{2b820}' && c <= '\u{2ceaf}') ||
+            (c >= '\u{f900}' && c <= '\u{faff}') ||
+            (c >= '\u{2f800}' && c <= '\u{2fa1f}')
+        });
+        
+        // 如果包含中文字符，不输出这一行
+        if has_chinese {
+            return;
+        }
+        
         let indent_str = "  ".repeat(self.indent);
         self.ir_output.push_str(&indent_str);
         self.ir_output.push_str(line);
@@ -1212,7 +1230,14 @@ impl CodeGenerator {
         self.emit("");
         self.generate_string_constants();
 
-        Ok(self.ir_output.clone())
+        // 清理输出：去除开头和结尾的空行
+        let mut result = self.ir_output.clone();
+        result = result.trim_start_matches('\n').to_string();
+        result = result.trim_end().to_string();
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        Ok(result)
     }
     
     /**

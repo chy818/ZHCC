@@ -319,7 +319,7 @@
     若 tok.值 == "(" 则 {
         parserConsume(p)
     } 否则 {
-        报错("期望 '('")
+        parser报告错误(p, "期望 '('")
     }
 
     funcNode.kind = 12  // 调用表达式
@@ -335,20 +335,22 @@
         }
 
         // 文件末尾，缺少 )
-        若 tok.值 == "" 则 {
-            报错("函数调用未闭合，期望 ')'")
+        若 tok.类型 == 6 则 {
+            parser报告错误(p, "函数调用未闭合，期望 ')'")
+            跳出
         }
 
         // 解析一个参数
-        定义 arg = parseExpression(p)
-        funcNode.children.append(arg)  // ✅ 追加，不是覆盖
+        定义 可变 arg: AST节点
+        arg = parseExpression(p)
+        列表追加(funcNode.children, arg)
 
         // 看下一个 token：逗号 or 结束
         tok = parserPeekToken(p)
         若 tok.值 == "," 则 {
             parserConsume(p)  // 吃掉逗号，继续下一个参数
         } 否则 若 tok.值 != ")" 则 {
-            报错("参数后期望逗号或右括号")
+            parser报告错误(p, "参数后期望逗号或右括号")
         }
     }
 
@@ -357,7 +359,7 @@
     若 tok.值 == ")" 则 {
         parserConsume(p)
     } 否则 {
-        报错("期望 ')' 结束函数调用")
+        parser报告错误(p, "期望 ')' 结束函数调用")
     }
 
     返回 funcNode
@@ -1738,7 +1740,7 @@
     定义 可变 recovery: ErrorRecovery
     recovery = parser创建错误恢复()
 
-    当 p.当前位置 < p.源码长度 && recovery.已恢复 == 0 则 {
+    当 p.pos < p.tokenCount && recovery.已恢复 == 0 则 {
         定义 可变 tok: Token
         tok = parserPeekToken(p)
 
@@ -1757,12 +1759,13 @@
  * 报告解析错误并尝试恢复
  */
 函数 parser错误报告恢复(p: Parser, 消息: 文本): Parser {
+    定义 可变 tok: Token
+    tok = parserPeekToken(p)
+    
     打印("解析错误 [行 ")
-    打印(p.当前行号)
+    打印(tok.行号)
     打印("]: ")
     打印(消息)
-
-    p.错误计数 = p.错误计数 + 1
 
     /* 尝试恢复 */
     p = parser跳过到恢复点(p)
@@ -1879,10 +1882,12 @@
  * 记录解析边界
  */
 函数 parser记录边界(p: Parser): 无返回 {
+    定义 可变 tok: Token
+    tok = parserPeekToken(p)
     打印("解析位置: 行 ")
-    打印(p.当前行号)
+    打印(tok.行号)
     打印(", 列 ")
-    打印(p.当前列号)
+    打印(tok.列号)
 }
 
 /**
@@ -1891,15 +1896,104 @@
 函数 parser诊断(p: Parser): 无返回 {
     打印("=== 解析器诊断 ===")
     打印("  当前位置: ")
-    打印(p.当前位置)
+    打印(p.pos)
     打印("/")
-    打印(p.源码长度)
-    打印("  当前行号: ")
-    打印(p.当前行号)
-    打印("  错误计数: ")
-    打印(p.错误计数)
-    打印("  警告计数: ")
-    打印(p.警告计数)
+    打印(p.tokenCount)
+    打印("  节点计数: ")
+    打印(p.nodeCount)
+    打印("  错误列表长度: ")
+    打印(列表长度(p.errors))
+}
+
+/**
+ * 打印 AST 节点（递归）
+ */
+函数 打印AST节点(node: AST节点, 缩进: 整数): 无返回 {
+    定义 可变 i: 整数
+    i = 0
+    
+    /* 打印缩进 */
+    当 i < 缩进 则 {
+        打印("  ")
+        i = i + 1
+    }
+    
+    /* 打印节点类型 */
+    定义 可变 类型名: 文本
+    类型名 = ""
+    若 node.kind == 0 则 { 类型名 = "程序" }
+    若 node.kind == 1 则 { 类型名 = "函数定义" }
+    若 node.kind == 2 则 { 类型名 = "参数列表" }
+    若 node.kind == 3 则 { 类型名 = "变量定义" }
+    若 node.kind == 4 则 { 类型名 = "赋值语句" }
+    若 node.kind == 5 则 { 类型名 = "if语句" }
+    若 node.kind == 6 则 { 类型名 = "while语句" }
+    若 node.kind == 7 则 { 类型名 = "循环语句" }
+    若 node.kind == 8 则 { 类型名 = "返回语句" }
+    若 node.kind == 9 则 { 类型名 = "表达式语句" }
+    若 node.kind == 10 则 { 类型名 = "二元表达式" }
+    若 node.kind == 11 则 { 类型名 = "一元表达式" }
+    若 node.kind == 12 则 { 类型名 = "调用表达式" }
+    若 node.kind == 13 则 { 类型名 = "标识符表达式" }
+    若 node.kind == 14 则 { 类型名 = "字面量表达式" }
+    若 node.kind == 15 则 { 类型名 = "类型转换" }
+    若 node.kind == 16 则 { 类型名 = "break语句" }
+    若 node.kind == 17 则 { 类型名 = "continue语句" }
+    若 node.kind == 18 则 { 类型名 = "块语句" }
+    若 node.kind == 19 则 { 类型名 = "赋值表达式" }
+    若 node.kind == 20 则 { 类型名 = "for循环" }
+    若 node.kind == 21 则 { 类型名 = "结构体定义" }
+    若 node.kind == 22 则 { 类型名 = "枚举定义" }
+    若 node.kind == 23 则 { 类型名 = "结构体字段" }
+    若 node.kind == 24 则 { 类型名 = "枚举成员" }
+    若 node.kind == 25 则 { 类型名 = "match语句" }
+    若 node.kind == 26 则 { 类型名 = "match分支" }
+    若 node.kind == 27 则 { 类型名 = "match默认分支" }
+    若 node.kind == 28 则 { 类型名 = "导入语句" }
+    若 node.kind == 29 则 { 类型名 = "模块定义" }
+    若 node.kind == 30 则 { 类型名 = "外部声明" }
+    
+    打印("[")
+    打印(类型名)
+    打印("]")
+    
+    若 node.name != "" 则 {
+        打印(" 名称: ")
+        打印(node.name)
+    }
+    
+    若 node.value != "" 则 {
+        打印(" 值: '")
+        打印(node.value)
+        打印("'")
+    }
+    
+    若 node.line > 0 则 {
+        打印(" 行: ")
+        打印(node.line)
+    }
+    
+    打印("")
+    
+    /* 递归打印子节点 */
+    定义 可变 childCount: 整数
+    childCount = 列表长度(node.children)
+    i = 0
+    当 i < childCount 则 {
+        定义 可变 child: AST节点
+        child = 列表获取(node.children, i)
+        打印AST节点(child, 缩进 + 1)
+        i = i + 1
+    }
+}
+
+/**
+ * 打印完整的 AST
+ */
+函数 打印AST(root: AST节点): 无返回 {
+    打印("=== AST 树 ===")
+    打印AST节点(root, 0)
+    打印("=== AST 结束 ===")
 }
 
 /* ============ 解析统计和调试 ============ */

@@ -798,14 +798,12 @@
  * 跳过到下一行
  */
 函数 lexer跳到下一行(lex: Lexer): Lexer {
-    当 lex.当前位置 < lex.长度 && lex.当前位置 != 10 则 {
-        lex.位置 = lex.位置 + 1
+    当 lex.位置 < lex.长度 && lex.当前字符 != 10 则 {
+        lex = lexer前进(lex)
     }
-    若 lex.当前位置 < lex.长度 则 {
-        lex.位置 = lex.位置 + 1
+    若 lex.位置 < lex.长度 则 {
+        lex = lexer前进(lex)
     }
-    lex.列号 = 0
-    lex.行号 = lex.行号 + 1
     返回 lex
 }
 
@@ -813,14 +811,9 @@
  * 跳过当前 token
  */
 函数 lexer跳过当前(lex: Lexer): Lexer {
-    定义 可变 ch: 整数
-    ch = lex.当前位置
-
-    当 ch != 32 && ch != 9 && ch != 10 && ch != 13 && ch != 0 && ch != 40 && ch != 41 && ch != 123 && ch != 125 && ch != 59 && ch != 44 则 {
-        lex.位置 = lex.位置 + 1
-        ch = lex.当前位置
+    当 是空白(lex.当前字符) == 0 && lex.当前字符 != 0 则 {
+        lex = lexer前进(lex)
     }
-
     返回 lex
 }
 
@@ -1293,4 +1286,71 @@
     打印(" 个 Token")
 
     返回 count
+}
+
+/**
+ * 完整的 tokenize 函数 - 将源码转换为 token 列表
+ * @param 源码 输入的源代码文本
+ * @return token 列表
+ */
+函数 tokenize(源码: 文本): 列表 {
+    定义 可变 lex: Lexer
+    lex = lexerInit(源码)
+    
+    定义 可变 tokens: 列表
+    tokens = 列表()
+    
+    定义 可变 tok: Token
+    tok.类型 = 0
+    tok.值 = ""
+    tok.行号 = 0
+    tok.列号 = 0
+    tok.开始位置 = 0
+    tok.结束位置 = 0
+    
+    当 tok.类型 != 6 则 {
+        tok = lexerNextToken(lex)
+        列表追加(tokens, tok)
+    }
+    
+    返回 tokens
+}
+
+/**
+ * 打印 token 列表
+ * @param tokens token 列表
+ */
+函数 打印Tokens(tokens: 列表): 无返回 {
+    定义 可变 i: 整数
+    i = 0
+    定义 可变 len: 整数
+    len = 列表长度(tokens)
+    
+    打印("=== Token 列表 ===")
+    
+    当 i < len 则 {
+        定义 可变 tok: Token
+        tok = 列表获取(tokens, i)
+        
+        定义 可变 类型名: 文本
+        类型名 = 获取Token类型名(tok.类型)
+        
+        打印("Token ")
+        打印(i + 1)
+        打印(": [")
+        打印(类型名)
+        打印("] '")
+        打印(tok.值)
+        打印("' (行:")
+        打印(tok.行号)
+        打印(", 列:")
+        打印(tok.列号)
+        打印(")")
+        
+        i = i + 1
+    }
+    
+    打印("总计: ")
+    打印(len)
+    打印(" 个 tokens")
 }
