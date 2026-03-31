@@ -51,3 +51,20 @@ MCP.json
 # xy 编译器输出
 *.ir
 out/
+
+# 构建脚本（仅保留 build_*.ps1 在 scripts 目录）
+scripts/*.ps1
+scripts/*.py
+
+# Python 构建脚本
+*.py
+build_*.py
+
+# 缓存文件
+*.xy.cache
+
+# 根目录下的测试文件
+test*.xy
+*_test.xy
+*_simple.xy
+xuanyu_ir_*.ll
